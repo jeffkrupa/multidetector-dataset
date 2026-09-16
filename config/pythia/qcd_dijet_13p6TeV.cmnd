@@ -1,0 +1,14 @@
+! Pythia8 card: pp -> QCD 2->2, pTHat > 150 GeV at 13.6 TeV. Process only; seed and N are CLI args.
+Beams:idA = 2212
+Beams:idB = 2212
+Beams:eCM = 13600.
+HardQCD:all = on
+PhaseSpace:pTHatMin = 150.
+Tune:pp = 14
+! Leave long-lived particles (c*tau > 10 mm: K0S, Lambda, ...) undecayed so Geant4 decays them inside the
+! detector. This is what both ATLAS (Pythia8_Base_Fragment) and CMS (pythia8CommonSettings) do in production,
+! and ATLAS TestHepMC rejects events with generator vertices displaced by > 1 m.
+ParticleDecays:limitTau0 = on
+ParticleDecays:tau0Max = 10.
+Next:numberShowEvent = 0
+Print:quiet = on

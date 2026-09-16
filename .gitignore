@@ -1,0 +1,6 @@
+output/
+gen/build/
+cms/build/
+*.log
+.asetup.save
+__pycache__/
