@@ -24,6 +24,10 @@ endif
 if ! defined keep
   keep = min
 endif
+if ! defined hepmc
+  hepmc = 0
+endif
+# hepmc = 1 additionally keeps the generated events as gzipped HepMC3 text (~65 kB/event)
 # keep = min (analysis files only, ~0.5 MB/event) | std (+AOD, EVNT, MiniAOD) | all (+HITS, GEN-SIM, RAW, AODSIM)
 
 repo      = /eos/home-j/jeffkrup/agentic/multidetector-dataset
@@ -32,7 +36,7 @@ seed_expr = $(seed0) + $(ProcId)
 final     = $(repo)/output/condor/$(process)_n$(nevents)/seed$(seed)
 
 executable            = $(repo)/condor/job.sh
-arguments             = $(process) $(seed) $(nevents) $(final) $(keep)
+arguments             = $(process) $(seed) $(nevents) $(final) $(keep) $(hepmc)
 # the repository is shipped with the job (make it with condor/make_tarball.sh); results are pushed by the job itself
 transfer_input_files  = $(repo)/condor/repo.tar.gz
 should_transfer_files = YES

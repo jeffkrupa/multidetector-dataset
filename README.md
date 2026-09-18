@@ -143,9 +143,10 @@ What is kept is configurable with `keep=`:
 
 | `keep=` | files copied back | size / event |
 |---|---|---|
-| `min` (default) | `gen/` (HepMC + provenance), the ATLAS `DAOD_PHYSLITE`, the CMS NanoAOD, all logs/commands/configs | ~0.4 MB |
-| `std` | + ATLAS `AOD`, `EVNT`; CMS MiniAOD (re-derive / re-dump later) | ~0.9 MB |
-| `all` | + ATLAS `HITS`; CMS GEN-SIM, RAW | ~4.5 MB |
+| `min` (default) | the ATLAS `DAOD_PHYSLITE`, the CMS NanoAOD, generator provenance (card, seed, cross-section, checksums), all logs/commands/configs | ~0.15 MB |
+| `std` | + ATLAS `AOD`, `EVNT`; CMS MiniAOD (re-derive / re-dump later) | ~0.6 MB |
+| `hepmc=1` (any level) | + the generated events as gzipped HepMC3 text. Off by default: the full generator record is inside the ATLAS file and the generator is deterministic, so any seed's HepMC can be regenerated in seconds with `gen/run_gen.sh` | +65 kB |
+| `all` | + ATLAS `HITS`; CMS GEN-SIM, RAW | ~4 MB |
 
 Content switches: `ATLAS_EXTRA_CONTENT="pflow truth tracks clusters"` (default) selects what is added to the single
 PHYSLITE (`""` = plain PHYSLITE); `ATLAS_DERIV_FORMATS="PHYSLITE FTAG1"` adds the official flavour-tagging format;

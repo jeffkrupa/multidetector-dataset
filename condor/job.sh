@@ -1,10 +1,13 @@
 #!/bin/bash
 # HTCondor job wrapper: one (process, seed, N) through gen + ATLAS + CMS on the node's scratch disk, then results to EOS.
 #
-#   condor/job.sh <process> <seed> <nevents> <final_output_dir_on_eos> [keep=min|std|all]
+#   condor/job.sh <process> <seed> <nevents> <final_output_dir_on_eos> [keep=min|std|all] [hepmc=0|1]
 #
-# keep=min (default): only what analysis needs -- gen/ (HepMC + provenance), ATLAS DAOD_* + pflow.root, CMS NanoAOD,
-#                     plus every log, command and config.                                  (~0.5 MB/event)
+# keep=min (default): only what analysis needs -- ATLAS DAOD_PHYSLITE, CMS NanoAOD, generator provenance (card, seed,
+#                     cross-section, checksums), every log, command and config.          (~0.15 MB/event)
+# hepmc=1           : also keep the generated events as gzipped HepMC3 text (~65 kB/event; HepMC2 is derivable from it).
+#                     Off by default: the full generator record is already inside the ATLAS file, and the generator is
+#                     deterministic (same card + seed + version -> identical file), so it can be regenerated in seconds.
 # keep=std          : + ATLAS AOD and EVNT, CMS MiniAOD (lets you re-derive / re-dump later) (~0.9 MB/event)
 # keep=all          : + ATLAS HITS, CMS GEN-SIM / RAW / AODSIM                                (~4.5 MB/event)
 #
@@ -12,7 +15,7 @@
 # nothing on the worker depends on /eos or /afs being mounted. Results are pushed to EOS through the FUSE mount if it is
 # there, otherwise with xrdcp over xrootd (Kerberos ticket shipped by MY.SendCredential).
 set -o pipefail
-PROC="${1:?process}"; SEED="${2:?seed}"; NEV="${3:?nevents}"; FINAL="${4:?final output dir}"; KEEP="${5:-min}"
+PROC="${1:?process}"; SEED="${2:?seed}"; NEV="${3:?nevents}"; FINAL="${4:?final output dir}"; KEEP="${5:-min}"; HEPMC="${6:-0}"
 case "${KEEP}" in 0) KEEP=std;; 1) KEEP=all;; min|std|all) ;; *) echo "[job] keep must be min|std|all"; exit 2;; esac
 SCRATCH="${_CONDOR_SCRATCH_DIR:-${TMPDIR:-/tmp}}"; cd "${SCRATCH}"
 echo "[job] host=$(hostname) cpus=${_CONDOR_JOB_CPUS:-?} scratch=${SCRATCH} start=$(date)"; klist 2>&1 | head -2
@@ -38,7 +41,8 @@ echo "[job] run_all rc=${rc} at $(date); collecting results"
 
 # --- collect what to keep
 KEEPDIR="${SCRATCH}/keep/$(basename "${FINAL}")"; mkdir -p "${KEEPDIR}/gen" "${KEEPDIR}/atlas" "${KEEPDIR}/cms"
-cp -f "${OUT}"/gen/* "${KEEPDIR}/gen/" 2>/dev/null
+cp -f "${OUT}"/gen/events.json "${OUT}"/gen/pythia.cmnd "${OUT}"/gen/SHA256SUMS "${OUT}"/gen/gen.log "${KEEPDIR}/gen/" 2>/dev/null
+[ "${HEPMC}" = 1 ] && gzip -c "${OUT}/gen/events.hepmc3" > "${KEEPDIR}/gen/events.hepmc3.gz"
 for exp in atlas cms; do
   # always: analysis-level outputs + logs, commands, configs
   cp -f "${OUT}/${exp}"/DAOD_*.pool.root "${OUT}/${exp}"/pflow.root "${OUT}/${exp}"/step4_nano.root \
