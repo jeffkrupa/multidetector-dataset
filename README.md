@@ -24,7 +24,7 @@ Each step is also a standalone script (re-runnable, idempotent per step, all com
 | step | script | runs in | output |
 |---|---|---|---|
 | 1. generate | `gen/run_gen.sh <process> <seed> <N> <dir>` | LCG_110 view from CVMFS | `events.hepmc3`, `events.hepmc2`, `events.json`, `SHA256SUMS` |
-| 2a. ATLAS | `atlas/run_atlas.sh <hepmc> <dir> <seed> <N>` | `x86_64-almalinux9` ATLAS apptainer image + `asetup Athena,25.0.72` | `EVNT`, `HITS`, `AOD`, `DAOD_PHYSLITE` + `DAOD_FTAG1` |
+| 2a. ATLAS | `atlas/run_atlas.sh <hepmc> <dir> <seed> <N>` | `x86_64-almalinux9` ATLAS apptainer image + `asetup Athena,25.0.72` | `EVNT`, `HITS`, `AOD`, one `DAOD_PHYSLITE` with constituent-level content |
 | 2b. CMS | `cms/run_cms.sh <hepmc> <dir> <seed> <N>` | `cmssw-el9` apptainer wrapper + `CMSSW_14_0_25` | `GEN-SIM`, `DIGI-RAW`, `AOD`, `MiniAOD`, `NanoAOD` |
 
 All versions are pinned in one place: [`config/versions.env`](config/versions.env).
@@ -106,8 +106,7 @@ dominated by Geant4 (~50 s CPU/event ATLAS, ~15 s CPU/event CMS for ttbar).
 
 | | ATLAS | CMS |
 |---|---|---|
-| analysis-level, uproot-readable | `DAOD_PHYSLITE.out.pool.root` (`CollectionTree`) | `step4_nano.root` (`Events`) |
-| **particle-flow candidates** (uproot-readable) | `pflow.root` (`pflow`): `fe_ch_*` / `fe_ne_*` = all charged/neutral `JetETMiss` FlowElements *before* e/γ/μ/τ overlap removal (the CMS-PF analogue) + full `tp_*` truth. Also `DAOD_FTAG1.out.pool.root`: post-removal `Global*ParticleFlowObjectsAuxDyn.*` with links to tracks/clusters/e/γ/μ, `InDetTrackParticles`, `CaloCalTopoClusters`, EMPFlow jets, full `TruthParticlesAuxDyn.*` | `step4_nano.root`: `PFCands_*` for **every** packed PF candidate (pt, eta, phi, mass, pdgId, charge, puppiWeight, track quality, d0/dz), `JetPFCands_*` jet↔candidate index table, `GenCands_*` |
+| **one analysis file, uproot-readable** | `DAOD_PHYSLITE.out.pool.root` (`CollectionTree`): PHYSLITE analysis objects (`Analysis*AuxDyn.*`, MET terms, b-tagging, truth summaries) **plus**, added by `atlas/python/MultiDetPHYSLITE.py`: all `JetETMiss` charged/neutral FlowElements *before* e/γ/μ/τ overlap removal (the CMS-PF analogue), the full `TruthParticles`/`TruthVertices` record, **all** `InDetTrackParticles` (PHYSLITE's track thinning removed) and `CaloCalTopoClusters`. These added containers are read as `<Container>Aux./<Container>Aux.<var>`. ~110 kB/event for ttbar. | `step4_nano.root` (`Events`): NanoAOD with `PFCands_*` for **every** packed PF candidate (pt, eta, phi, mass, pdgId, charge, puppiWeight, track quality, d0/dz), `JetPFCands_*`, `GenCands_*` | `step4_nano.root`: `PFCands_*` for **every** packed PF candidate (pt, eta, phi, mass, pdgId, charge, puppiWeight, track quality, d0/dz), `JetPFCands_*` jet↔candidate index table, `GenCands_*` |
 | full reconstruction kept | `AOD.pool.root` | `step3_reco.root` (AODSIM), `step3_reco_inMINIAODSIM.root` |
 | detector-level | `HITS.pool.root` | `step1_gensim.root`, `step2_digiraw.root` (RAW) |
 | generator-level | `EVNT.pool.root` | `gen/events.hepmc3` / `.hepmc2` (shared) |
@@ -144,13 +143,14 @@ What is kept is configurable with `keep=`:
 
 | `keep=` | files copied back | size / event |
 |---|---|---|
-| `min` (default) | `gen/` (HepMC + provenance), `DAOD_PHYSLITE`, `DAOD_FTAG1`, `pflow.root`, NanoAOD, all logs/commands/configs | ~0.5 MB |
+| `min` (default) | `gen/` (HepMC + provenance), the ATLAS `DAOD_PHYSLITE`, the CMS NanoAOD, all logs/commands/configs | ~0.4 MB |
 | `std` | + ATLAS `AOD`, `EVNT`; CMS MiniAOD (re-derive / re-dump later) | ~0.9 MB |
 | `all` | + ATLAS `HITS`; CMS GEN-SIM, RAW | ~4.5 MB |
 
-Steps that can be switched off: `ATLAS_DERIV_FORMATS=PHYSLITE` drops FTAG1 (tracks/clusters; PF objects and truth are
-already in `pflow.root`), `ATLAS_PFLOW_DUMP=0` drops the flat dump, `CMS_WRITE_AODSIM=1` re-enables the full AODSIM output
-(off by default: NanoAOD only needs MiniAOD), `CMS_PFNANO=0` drops PF candidates from NanoAOD.
+Content switches: `ATLAS_EXTRA_CONTENT="pflow truth tracks clusters"` (default) selects what is added to the single
+PHYSLITE (`""` = plain PHYSLITE); `ATLAS_DERIV_FORMATS="PHYSLITE FTAG1"` adds the official flavour-tagging format;
+`ATLAS_PFLOW_DUMP=1` adds the flat `pflow.root`; `CMS_WRITE_AODSIM=1` re-enables the full AODSIM output (off by default:
+NanoAOD only needs MiniAOD); `CMS_PFNANO=0` drops PF candidates from NanoAOD.
 Budget: ~50 s CPU/event ATLAS + ~15 s CPU/event CMS, so 500 ttbar events ≈ 2.5 h on 8 cores; use `+JobFlavour="workday"`
 for ≤200 events/job. Then run the checks and plots over all seeds at once:
 `python3 scripts/compare_events.py output/condor/<process>_n<N>/seed*` (plots go to `output/condor/<process>_n<N>/compare_all/`).

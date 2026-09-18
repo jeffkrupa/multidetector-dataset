@@ -25,17 +25,19 @@ composed from release code/tests rather than executed.
 4. **AOD → DAOD_PHYSLITE** (`Derivation_tf.py --CA --formats PHYSLITE`). PHYSLITE is flat enough for uproot:
    `uproot.open("DAOD_PHYSLITE.out.pool.root:CollectionTree")["AnalysisJetsAuxDyn.pt"]`.
 
-5. **Particle-flow objects and full truth: `DAOD_FTAG1`** (added to `--formats`, default `PHYSLITE FTAG1`). Pointed out by the
-   ATLAS derivation group: FTAG1 keeps the constituent-level content as dynamic (uproot-readable) branches:
-   `GlobalChargedParticleFlowObjects` / `GlobalNeutralParticleFlowObjects` (FlowElements *after* e/γ/μ overlap removal, so a
-   prompt electron is not double-counted, similar to a CMS PF electron), `InDetTrackParticles`, `CaloCalTopoClusters`,
-   `AntiKt4EMPFlowJets` (+VR track jets), and the **full** `TruthParticles`/`TruthVertices`. ~240 kB/event for Z→ee, 2 min/job.
-   **Caveat**: the Global containers are *after* overlap removal against electron, muon, photon and tau **candidates**
-   (no identification applied); tau candidates exist for many ordinary jets, so Global charged FEs under-count high-pT
-   jet-core tracks by ~30% (measured: Global/truth = 0.68 vs JetETMiss/truth = 0.85 for pT > 20 GeV). The analogue of
-   CMS's packed PF candidates is the pre-removal `JetETMiss*ParticleFlowObjects`, which only the AOD holds; `atlas/dump_pflow.py`
-   writes them (plus full truth) to a flat `pflow.root`, on by default (`ATLAS_PFLOW_DUMP=1`, ~25 s/job), and the
-   comparison prefers it.
+5. **One analysis file.** `Derivation_tf.py --formats PHYSLITE --postInclude MultiDetPHYSLITE.AddMultiDetContent`
+   (`atlas/python/MultiDetPHYSLITE.py`, on `PYTHONPATH` inside the chain) extends the PHYSLITE output stream's item list with
+   the constituent-level containers, selected by `ATLAS_EXTRA_CONTENT` (default `pflow truth tracks clusters`):
+   `JetETMissCharged/NeutralParticleFlowObjects` (all FlowElements *before* e/γ/μ/τ overlap removal, the CMS-PF analogue),
+   `TruthParticles` + `TruthVertices` (full record), `InDetTrackParticles` (perigee, fit quality, hits, truth link) and
+   `CaloCalTopoClusters` (calibrated/raw 4-vectors, moments). When tracks are requested the module removes PHYSLITE's
+   InDetTrackParticles thinning tools from the kernel (a track survives thinning if *any* tool keeps it, so all of them
+   must go); the egamma cluster thinning stays. Verified on the Z→ee sample: FlowElements, tracks, clusters and truth
+   counts equal the AOD's. The added containers keep their native aux store, split per variable, so uproot reads them as
+   `<Container>Aux./<Container>Aux.<var>`; PHYSLITE's own content stays `<Container>AuxDyn.<var>`.
+   Alternatives, off by default: `ATLAS_DERIV_FORMATS="PHYSLITE FTAG1"` (official flavour-tagging format: post-overlap-removal
+   `Global*` FlowElements, which under-count high-pT jet-core tracks by ~30% because tau *candidates* are removed, plus
+   VR jets, b-tagging inputs; ~175 kB/event), `ATLAS_PFLOW_DUMP=1` (flat `pflow.root` from `atlas/dump_pflow.py`).
    Energy partition (200 ttbar events, |η|<2.5, ΣpT / visible truth): ATLAS charged 0.51 + neutral 0.42 = 0.93;
    CMS charged 0.65 + neutral 0.28 = 0.94. ATLAS keeps the energy of tracks above ~40 GeV and in dense cores in the
    calorimeter (neutral FEs); CMS assigns it to charged hadrons. Jets sum both, so the partition cancels.

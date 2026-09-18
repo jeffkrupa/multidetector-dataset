@@ -110,7 +110,19 @@ def load_atlas(d):
     # Global* FlowElements, which are AFTER overlap removal (tracks matched to any electron/muon/tau *candidate* are gone,
     # so high-pT jet-core tracks are under-counted by ~30%). Truth comes from either.
     ft = glob.glob(os.path.join(d, "atlas", "DAOD_FTAG1.*.pool.root")); pf = os.path.join(d, "atlas", "pflow.root")
-    if os.path.exists(pf):
+    sa = lambda c, v: f"{c}Aux./{c}Aux.{v}"          # split static-aux branch naming used for the added containers
+    if sa("JetETMissChargedParticleFlowObjects", "pt") in keys and sa("TruthParticles", "pdgId") in keys:
+        a = t.arrays([sa("JetETMissChargedParticleFlowObjects", "pt"), sa("JetETMissChargedParticleFlowObjects", "eta"),
+                      sa("JetETMissNeutralParticleFlowObjects", "pt"), sa("JetETMissNeutralParticleFlowObjects", "eta"),
+                      sa("TruthParticles", "pdgId"), sa("TruthParticles", "px"), sa("TruthParticles", "py"), sa("TruthParticles", "pz"), sa("TruthParticles", "e")])
+        for i in range(len(evn)):
+            ev = int(evn[i])
+            out[ev]["pf"] = dict(ch=[(float(p) / 1000., float(e)) for p, e in zip(a[sa("JetETMissChargedParticleFlowObjects", "pt")][i], a[sa("JetETMissChargedParticleFlowObjects", "eta")][i])],
+                                 ne=[(float(p) / 1000., float(e)) for p, e in zip(a[sa("JetETMissNeutralParticleFlowObjects", "pt")][i], a[sa("JetETMissNeutralParticleFlowObjects", "eta")][i])])
+            out[ev]["fulltruth"] = [(int(g), *kin(float(px) / 1000., float(py) / 1000., float(pz) / 1000., float(e) / 1000.)) for g, px, py, pz, e in
+                                    zip(a[sa("TruthParticles", "pdgId")][i], a[sa("TruthParticles", "px")][i], a[sa("TruthParticles", "py")][i], a[sa("TruthParticles", "pz")][i], a[sa("TruthParticles", "e")][i])]
+            out[ev]["pf_source"] = "PHYSLITE+MultiDet (JetETMiss FE)"
+    elif os.path.exists(pf):
         a = uproot.open(pf)["pflow"].arrays(["event", "fe_ch_pt", "fe_ch_eta", "fe_ne_pt", "fe_ne_eta", "tp_pdg", "tp_pt", "tp_eta", "tp_phi"])
         for i in range(len(a)):
             ev = int(a["event"][i])
