@@ -28,7 +28,8 @@ import uproot
 def read_hepmc(path):
     """Minimal HepMC2/HepMC3 ASCII reader -> {event_number: [(pdg, status, px, py, pz, e), ...]} in GeV."""
     events, cur, evno, v3 = {}, None, None, None
-    with open(path) as f:
+    import gzip
+    with (gzip.open(path, "rt") if path.endswith(".gz") else open(path)) as f:
         for line in f:
             tag = line[:2]
             if tag == "E ":
@@ -192,12 +193,33 @@ def report(name, ok, detail=""):
     return ok
 
 # --------------------------------------------------------------------------------------- main
+def hepmc_files(d, gen):
+    """Return (hepmc3 path, hepmc2 path, note). Batch jobs keep no HepMC text by default (or only gzipped HepMC3), so
+    regenerate from the saved card + seed + N with the same generator build (deterministic) and verify the sha256 that
+    the job recorded in gen/SHA256SUMS: that proves the regenerated file is byte-identical to what both experiments read."""
+    import hashlib, subprocess, tempfile
+    g = os.path.join(d, "gen")
+    h3 = next((p for p in (g + "/events.hepmc3", g + "/events.hepmc3.gz") if os.path.exists(p)), None)
+    h2 = g + "/events.hepmc2" if os.path.exists(g + "/events.hepmc2") else None
+    if h3 and h2: return h3, h2, ""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tmp = tempfile.mkdtemp(prefix="hepmc_regen_", dir=os.environ.get("TMPDIR"))
+    if not os.path.exists(repo + "/gen/build/gen_hepmc"): subprocess.run(["bash", repo + "/gen/build.sh"], check=True, capture_output=True)
+    subprocess.run([repo + "/gen/build/gen_hepmc", g + "/pythia.cmnd", str(gen["seed"]), str(gen["nevents"]), tmp + "/events"], check=True, capture_output=True)
+    recorded = {l.split()[1].split("/")[-1]: l.split()[0] for l in open(g + "/SHA256SUMS")} if os.path.exists(g + "/SHA256SUMS") else {}
+    ok = all(hashlib.sha256(open(f"{tmp}/events.{x}", "rb").read()).hexdigest() == recorded.get(f"events.{x}") for x in ("hepmc3", "hepmc2") if f"events.{x}" in recorded)
+    note = f"HepMC text not kept; regenerated {gen['nevents']} events from card+seed {gen['seed']}: sha256 {'MATCHES' if ok else 'DOES NOT MATCH'} the job's SHA256SUMS"
+    if not ok: raise RuntimeError(note)
+    return tmp + "/events.hepmc3", tmp + "/events.hepmc2", note
+
 def load_sample(d):
     """Load one sample directory; keys are (sample_tag, event_number) so several seeds can be merged."""
     d = d.rstrip("/"); tag = os.path.basename(d)
     gen = json.load(open(os.path.join(d, "gen", "events.json")))
     rekey = lambda m: {(tag, k): v for k, v in m.items()} if m is not None else None
-    h3 = rekey(read_hepmc(os.path.join(d, "gen", "events.hepmc3"))); h2 = rekey(read_hepmc(os.path.join(d, "gen", "events.hepmc2")))
+    h3p, h2p, note = hepmc_files(d, gen)
+    h3 = rekey(read_hepmc(h3p)); h2 = rekey(read_hepmc(h2p))
+    if note: print(f"[{tag}] {note}")
     atlas = load_atlas(d); cms = rekey(load_cms(d))
     atlas, containers = (rekey(atlas[0]), atlas[1]) if atlas else (None, [])
     return gen, h3, h2, atlas, cms, containers

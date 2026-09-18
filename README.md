@@ -53,7 +53,7 @@ Details and pitfalls per experiment: [`docs/ATLAS.md`](docs/ATLAS.md), [`docs/CM
 
 | check | what it proves |
 |---|---|
-| `hepmc-inputs` | the HepMC3 file read by ATLAS and the HepMC2 file read by CMS contain identical particles (order-independent, 1e-6) |
+| `hepmc-inputs` | the HepMC3 file read by ATLAS and the HepMC2 file read by CMS contain identical particles (order-independent, 1e-6). If the job did not keep the HepMC text, the events are regenerated from the saved card + seed and the sha256 recorded by the job must match (proves the regenerated file is what both experiments read) |
 | `atlas-truth` | every truth particle ATLAS kept in PHYSLITE (`TruthElectrons`, `TruthPhotons`, `TruthNeutrinos`, `TruthBosons…`, `TruthTop`…) exists in the HepMC file |
 | `cms-truth` | every `GenPart` CMS kept in NanoAOD exists in the HepMC file |
 | `atlas-fulltruth` | every HepMC particle exists in the ATLAS `TruthParticles` (full record, from `DAOD_FTAG1`) |
