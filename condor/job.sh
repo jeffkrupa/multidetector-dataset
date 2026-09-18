@@ -1,5 +1,6 @@
 #!/bin/bash
-# HTCondor job wrapper: one (process, seed, N) through gen + ATLAS + CMS on the node's scratch disk, then results to EOS.
+# Batch job wrapper (HTCondor or Slurm): one (process, seed, N) through gen + ATLAS + CMS on the node's scratch disk,
+# then the results to their final directory (shared filesystem / EOS FUSE, or xrootd if only that is reachable).
 #
 #   condor/job.sh <process> <seed> <nevents> <final_output_dir_on_eos> [keep=min|std|all] [hepmc=0|1]
 #
@@ -17,11 +18,14 @@
 set -o pipefail
 PROC="${1:?process}"; SEED="${2:?seed}"; NEV="${3:?nevents}"; FINAL="${4:?final output dir}"; KEEP="${5:-min}"; HEPMC="${6:-0}"
 case "${KEEP}" in 0) KEEP=std;; 1) KEEP=all;; min|std|all) ;; *) echo "[job] keep must be min|std|all"; exit 2;; esac
-SCRATCH="${_CONDOR_SCRATCH_DIR:-${TMPDIR:-/tmp}}"; cd "${SCRATCH}"
-echo "[job] host=$(hostname) cpus=${_CONDOR_JOB_CPUS:-?} scratch=${SCRATCH} start=$(date)"; klist 2>&1 | head -2
+# scheduler-provided scratch dir and core count: HTCondor, Slurm, or plain shell (TMPDIR, nproc)
+SCRATCH="${_CONDOR_SCRATCH_DIR:-${SLURM_TMPDIR:-${TMPDIR:-/tmp}}}"; mkdir -p "${SCRATCH}"; cd "${SCRATCH}"
+CPUS="${_CONDOR_JOB_CPUS:-${SLURM_CPUS_PER_TASK:-$(nproc)}}"
+echo "[job] host=$(hostname) cpus=${CPUS} scratch=${SCRATCH} start=$(date)"; klist 2>&1 | head -2
 
-# --- repository: unpack the shipped tarball (preferred) or fall back to a visible checkout
-if [ -f repo.tar.gz ]; then mkdir -p repo && tar xzf repo.tar.gz -C repo && REPO="${SCRATCH}/repo"; echo "[job] repo from tarball: $(head -1 repo/PROVENANCE)"
+# --- repository: the tarball shipped by HTCondor (cwd), or one named in REPO_TARBALL (Slurm), or a visible checkout
+[ -f repo.tar.gz ] || { [ -n "${REPO_TARBALL:-}" ] && cp "${REPO_TARBALL}" repo.tar.gz; }
+if [ -f repo.tar.gz ]; then rm -rf repo && mkdir -p repo && tar xzf repo.tar.gz -C repo && REPO="${SCRATCH}/repo"; echo "[job] repo from tarball: $(head -1 repo/PROVENANCE)"
 elif [ -n "${REPO}" ] && [ -f "${REPO}/run_all.sh" ]; then echo "[job] repo from ${REPO}"
 else echo "[job] no repo.tar.gz and no usable REPO"; exit 1; fi
 export TMPDIR="${SCRATCH}" CMS_WORK_AREA="${SCRATCH}/cmswork"
@@ -29,7 +33,7 @@ source "${REPO}/scripts/common.sh"
 OUT="${SCRATCH}/${PROC}_seed${SEED}_n${NEV}"
 
 # --- run: with < 8 cores ATLAS then CMS sequentially using all cores, else concurrently with 4+4 threads
-CPUS="${_CONDOR_JOB_CPUS:-8}"; rc=0
+rc=0
 if [ "${CPUS}" -lt 8 ]; then
   export ATLAS_NTHREADS="${CPUS}" CMS_NTHREADS="${CPUS}"
   STEPS="gen atlas" "${REPO}/run_all.sh" "${PROC}" "${SEED}" "${NEV}" "${OUT}" || rc=$?
@@ -53,9 +57,9 @@ done
 cp -f "${OUT}"/atlas.log "${OUT}"/cms.log "${REPO}/PROVENANCE" "${KEEPDIR}/" 2>/dev/null
 echo "[job] keeping $(du -sh "${KEEPDIR}" | cut -f1)"
 
-# --- push to EOS: FUSE if mounted, else xrootd
-if [ -d /eos ] && mkdirp "${FINAL}" 2>/dev/null && [ -d "${FINAL}" ]; then   # mkdirp: EOS-FUSE-safe (scripts/common.sh)
-  cp -rf "${KEEPDIR}/." "${FINAL}/" && echo "[job] copied via FUSE to ${FINAL}" || rc=$((rc + 100))
+# --- deliver: a mounted filesystem (shared FS, EOS FUSE) if the destination can be created, else xrootd to EOS
+if mkdirp "${FINAL}" 2>/dev/null && [ -d "${FINAL}" ]; then   # mkdirp: EOS-FUSE-safe (scripts/common.sh)
+  cp -rf "${KEEPDIR}/." "${FINAL}/" && echo "[job] copied to ${FINAL}" || rc=$((rc + 100))
 else
   XR="root://eosuser.cern.ch/${FINAL}"
   xrdfs eosuser.cern.ch mkdir -p "${FINAL}" >/dev/null 2>&1

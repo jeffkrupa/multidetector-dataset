@@ -156,6 +156,21 @@ Budget: ~50 s CPU/event ATLAS + ~15 s CPU/event CMS, so 500 ttbar events ≈ 2.5
 for ≤200 events/job. Then run the checks and plots over all seeds at once:
 `python3 scripts/compare_events.py output/condor/<process>_n<N>/seed*` (plots go to `output/condor/<process>_n<N>/compare_all/`).
 
+## Running at scale (Slurm or another scheduler)
+
+`condor/job.sh` is scheduler-agnostic: it takes its scratch directory and core count from HTCondor, Slurm
+(`SLURM_TMPDIR`, `SLURM_CPUS_PER_TASK`) or the shell, gets the repository from a tarball (`REPO_TARBALL`) or a visible
+checkout (`REPO`), and delivers results to any writable filesystem (or EOS over xrootd). `slurm/submit.sbatch` is a
+job-array front end:
+
+```bash
+condor/make_tarball.sh
+PROCESS=ttbar_13p6TeV NEVENTS=100 SEED0=3000 KEEP=min sbatch --array=0-19 --cpus-per-task=1 slurm/submit.sbatch
+```
+
+Nodes need x86_64 EL9, CVMFS, apptainer and outbound access to the ATLAS/CMS Frontier conditions servers. No CERN
+account is involved; outputs go to `FINAL_BASE` (default `output/slurm/<process>_n<N>/seed<seed>/`).
+
 ## Requirements
 
 * EL9 host with `/cvmfs/{sft,atlas,atlas-condb,cms}.cern.ch` and `apptainer` (lxplus works out of the box).
