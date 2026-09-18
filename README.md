@@ -24,7 +24,7 @@ Each step is also a standalone script (re-runnable, idempotent per step, all com
 | step | script | runs in | output |
 |---|---|---|---|
 | 1. generate | `gen/run_gen.sh <process> <seed> <N> <dir>` | LCG_110 view from CVMFS | `events.hepmc3`, `events.hepmc2`, `events.json`, `SHA256SUMS` |
-| 2a. ATLAS | `atlas/run_atlas.sh <hepmc> <dir> <seed> <N>` | `x86_64-almalinux9` ATLAS apptainer image + `asetup Athena,25.0.72` | `EVNT`, `HITS`, `AOD`, `DAOD_PHYSLITE.*.pool.root` |
+| 2a. ATLAS | `atlas/run_atlas.sh <hepmc> <dir> <seed> <N>` | `x86_64-almalinux9` ATLAS apptainer image + `asetup Athena,25.0.72` | `EVNT`, `HITS`, `AOD`, `DAOD_PHYSLITE` + `DAOD_FTAG1` |
 | 2b. CMS | `cms/run_cms.sh <hepmc> <dir> <seed> <N>` | `cmssw-el9` apptainer wrapper + `CMSSW_14_0_25` | `GEN-SIM`, `DIGI-RAW`, `AOD`, `MiniAOD`, `NanoAOD` |
 
 All versions are pinned in one place: [`config/versions.env`](config/versions.env).
@@ -49,18 +49,22 @@ Details and pitfalls per experiment: [`docs/ATLAS.md`](docs/ATLAS.md), [`docs/CM
 
 ## Comparing the two reconstructions
 
-`python3 scripts/compare_events.py output/<sample>` (after `source gen/env_lcg.sh`) runs five checks and exits non-zero if any fails:
+`python3 scripts/compare_events.py output/<sample>` (after `source gen/env_lcg.sh`) runs seven checks and exits non-zero if any fails:
 
 | check | what it proves |
 |---|---|
 | `hepmc-inputs` | the HepMC3 file read by ATLAS and the HepMC2 file read by CMS contain identical particles (order-independent, 1e-6) |
 | `atlas-truth` | every truth particle ATLAS kept in PHYSLITE (`TruthElectrons`, `TruthPhotons`, `TruthNeutrinos`, `TruthBosons…`, `TruthTop`…) exists in the HepMC file |
 | `cms-truth` | every `GenPart` CMS kept in NanoAOD exists in the HepMC file |
+| `atlas-fulltruth` | every HepMC particle exists in the ATLAS `TruthParticles` (full record, from `DAOD_FTAG1`) |
+| `cms-gencands` | every HepMC stable particle with \|η\|<5.9 exists in CMS `GenCands` (all packedGenParticles; CMS stores \|y\|<6) |
 | `truth-xcheck` | stable truth e/μ stored by both experiments agree 1:1 |
 | `event-join` | N generated = N ATLAS = N CMS = N joined on event number |
 
 It then prints a per-event reco table and writes `<sample>/compare/compare.png` (truth identity, ΔR-matched electron and
-jet pT ATLAS vs CMS, MET, jet multiplicity, electron response vs HepMC truth) and `event_<n>.png` η–φ displays.
+jet pT ATLAS vs CMS, MET, jet multiplicity, electron response vs HepMC truth), `compare_pflow.png` (particle-flow level:
+charged/neutral candidate multiplicity and ΣpT ATLAS vs CMS in a common fiducial region, multiplicity vs HepMC stable
+charged particles, charged pT spectra) and `event_<n>.png` η–φ displays.
 Caveats: ATLAS MET is the vector sum of the PHYSLITE core terms (final MET needs METMaker in Athena); PHYSLITE jets are not
 overlap-removed against electrons, NanoAOD jets are not either, so a Z→ee event shows two "jets" in both.
 
@@ -73,17 +77,51 @@ event | ATLAS n_ele lead e pt                jets pt (GeV) | CMS n_ele lead e pt
     3 |           0      None                 [79.5, 50.1] |         0      None                 [69.3, 52.9]
 ```
 
-Wall time for 3 events including all framework start-up: ATLAS ~8.5 min (1 thread), CMS ~3.5 min (4 threads).
-Per-event cost at scale is dominated by Geant4 (tens of seconds per event in each experiment).
+Also verified on ttbar: 2 events (seed 7) and 20 events (seed 11), all checks PASS; 97 ΔR-matched jets lie on the
+ATLAS-vs-CMS identity line (`output/ttbar_13p6TeV_seed11_n20/compare/compare.png`).
+
+Particle-flow level (`compare_pflow.png`): the experiments partition the same energy differently. Within |η|<2.5 and
+relative to the visible truth ΣpT (200 ttbar events): ATLAS charged 0.51 + neutral 0.42 = 0.93, CMS charged 0.65 + neutral
+0.28 = 0.94, per-event totals correlated at 0.96. ATLAS leaves the energy of high-pT and dense-core tracks in the
+calorimeter (neutral FlowElements), CMS assigns it to charged hadrons; CMS also keeps ~25% more soft (<2 GeV) charged
+candidates. Jets sum both categories, so they agree while candidate counts do not. Per ttbar event (measured, 20 events): ~400 CMS PF candidates; ~65 charged + ~55 neutral ATLAS Global FlowElements (FTAG1, ~175 kB/event incl. tracks, clusters, truth); the ATLAS
+charged multiplicity sits ~20% below the HepMC stable-charged count in acceptance (PFlow track selection), CMS ~10% above
+(secondaries, split tracks).
+
+Wall time, 20 ttbar events on lxplus, both experiments with 4 threads (the default):
+
+| step | ATLAS (4 thr) | ATLAS (1 thr) | CMS (4 thr) |
+|---|---|---|---|
+| HepMC in | 1:32 | 0:58 | (in GEN-SIM) |
+| Geant4 | 7:19 | 17:26 | 1:39 (GEN-SIM) |
+| digi/HLT + reco | 3:04 | 3:05 | 0:48 + 1:04 |
+| analysis format(s) | 2:50 | 4:40 | 0:35 |
+| **total** | **~15 min** | **~26 min** | **~4 min** |
+
+ATLAS Geant4 CPU is the same in both modes (~1010 s), so the threading is efficient and the reconstructed output is
+identical event by event. Reco and derivation are start-up dominated at this size (1–2 min each). Per-event cost at scale is
+dominated by Geant4 (~50 s CPU/event ATLAS, ~15 s CPU/event CMS for ttbar).
 
 ## Output formats
 
 | | ATLAS | CMS |
 |---|---|---|
-| analysis-level, uproot-readable | `DAOD_PHYSLITE.out.pool.root` (`CollectionTree`) | `step4_nano.root` (`Events`), incl. `PFCands_*` |
+| analysis-level, uproot-readable | `DAOD_PHYSLITE.out.pool.root` (`CollectionTree`) | `step4_nano.root` (`Events`) |
+| **particle-flow candidates** (uproot-readable) | `pflow.root` (`pflow`): `fe_ch_*` / `fe_ne_*` = all charged/neutral `JetETMiss` FlowElements *before* e/γ/μ/τ overlap removal (the CMS-PF analogue) + full `tp_*` truth. Also `DAOD_FTAG1.out.pool.root`: post-removal `Global*ParticleFlowObjectsAuxDyn.*` with links to tracks/clusters/e/γ/μ, `InDetTrackParticles`, `CaloCalTopoClusters`, EMPFlow jets, full `TruthParticlesAuxDyn.*` | `step4_nano.root`: `PFCands_*` for **every** packed PF candidate (pt, eta, phi, mass, pdgId, charge, puppiWeight, track quality, d0/dz), `JetPFCands_*` jet↔candidate index table, `GenCands_*` |
 | full reconstruction kept | `AOD.pool.root` | `step3_reco.root` (AODSIM), `step3_reco_inMINIAODSIM.root` |
 | detector-level | `HITS.pool.root` | `step1_gensim.root`, `step2_digiraw.root` (RAW) |
 | generator-level | `EVNT.pool.root` | `gen/events.hepmc3` / `.hepmc2` (shared) |
+
+## Known small effects (measured on 1000 ttbar events)
+
+* **Quarkonium → gluons events (2 per 1000)**: when Pythia decays an Υ or ψ(2S) to three gluons, Athena's `FixHepMC`
+  strips the parton daughters, `TestHepMC` then rejects the event for a decayed particle without a decay vertex, and
+  Gen_tf runs off the end of the input file and fails. The generator now drops events containing a decayed particle
+  with parton-only (or no) daughters (counted as `dropped_malformed` in `events.json`), so neither experiment sees
+  them; every other event is byte-identical to before. The bias is negligible and the same for both experiments.
+* **ATLAS PDG-mass adjustment (~1e-5 of particles)**: when storing the truth record ATLAS resets the mass of broad
+  resonances generated off-shell (e.g. an a1(1260) at 1.257 GeV → 1.230 GeV) and rescales that particle and its decay
+  products by O(0.1–0.2%). The `atlas-fulltruth` check reports how many particles matched only at <0.5% for this reason.
 
 ## Limitations / next steps
 
@@ -92,6 +130,30 @@ Per-event cost at scale is dominated by Geant4 (tens of seconds per event in eac
   The two files are written from the same in-memory event, so content is identical.
 * The CMS global tag is `auto:phase1_2024_realistic`; swap in the production tag (`140X_mcRun3_2024_realistic_v26`) via `CMS_CONDITIONS` if bit-level agreement with Run3Summer24 matters.
 * Scale-out: each `run_all.sh` invocation is one seed; run many seeds as independent HTCondor jobs (the scripts are self-contained and only need CVMFS + apptainer).
+
+## Running at scale (HTCondor at CERN)
+
+```bash
+condor_submit condor/submit.sub                                           # 10 jobs x 500 ttbar events, seeds 1000..1009
+condor_submit process=zee_13p6TeV nevents=500 njobs=20 seed0=2000 condor/submit.sub
+```
+
+Each job (`condor/job.sh`) ships the repo as a tarball, runs gen + ATLAS + CMS on the node's scratch disk (2 cores by
+default, `cpus=1` for single-threaded), and copies results to `output/condor/<process>_n<N>/seed<seed>/` on EOS.
+What is kept is configurable with `keep=`:
+
+| `keep=` | files copied back | size / event |
+|---|---|---|
+| `min` (default) | `gen/` (HepMC + provenance), `DAOD_PHYSLITE`, `DAOD_FTAG1`, `pflow.root`, NanoAOD, all logs/commands/configs | ~0.5 MB |
+| `std` | + ATLAS `AOD`, `EVNT`; CMS MiniAOD (re-derive / re-dump later) | ~0.9 MB |
+| `all` | + ATLAS `HITS`; CMS GEN-SIM, RAW | ~4.5 MB |
+
+Steps that can be switched off: `ATLAS_DERIV_FORMATS=PHYSLITE` drops FTAG1 (tracks/clusters; PF objects and truth are
+already in `pflow.root`), `ATLAS_PFLOW_DUMP=0` drops the flat dump, `CMS_WRITE_AODSIM=1` re-enables the full AODSIM output
+(off by default: NanoAOD only needs MiniAOD), `CMS_PFNANO=0` drops PF candidates from NanoAOD.
+Budget: ~50 s CPU/event ATLAS + ~15 s CPU/event CMS, so 500 ttbar events ≈ 2.5 h on 8 cores; use `+JobFlavour="workday"`
+for ≤200 events/job. Then run the checks and plots over all seeds at once:
+`python3 scripts/compare_events.py output/condor/<process>_n<N>/seed*` (plots go to `output/condor/<process>_n<N>/compare_all/`).
 
 ## Requirements
 

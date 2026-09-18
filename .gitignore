@@ -4,3 +4,5 @@ cms/build/
 *.log
 .asetup.save
 __pycache__/
+repo.tar.gz
+PROVENANCE

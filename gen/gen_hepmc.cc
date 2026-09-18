@@ -46,12 +46,27 @@ int main(int argc, char** argv) {
   HepMC3::WriterAscii w3(base + ".hepmc3");
   HepMC3::WriterAsciiHepMC2 w2(base + ".hepmc2");
 
-  int nGood = 0;
+  int nGood = 0, nBad = 0;
   for (int i = 0; i < nev; ++i) {
     if (!pythia.next()) { std::cerr << "event " << i << " failed, retrying\n"; --i; continue; }
     HepMC3::GenEvent ev(HepMC3::Units::GEV, HepMC3::Units::MM);
     toHepMC.fill_next_event(pythia, &ev);
-    ev.set_event_number(i + 1);            // 1-based, same number in both experiments' outputs
+    // Record sanity. (a) Every decayed (status 2) particle must have a decay vertex with daughters and every stable
+    // (status 1) particle none. (b) A decayed particle must not decay *only* into partons (quarkonium -> ggg, ~2 per
+    // 1000 ttbar events): Athena's FixHepMC strips such parton daughters, leaving a status-2 particle without a decay
+    // vertex, which ATLAS TestHepMC rejects (and Gen_tf then runs off the end of the input). Drop such events here so
+    // that both experiments see exactly the same, well-formed sample; count them in events.json.
+    bool bad = false;
+    for (auto& p : ev.particles()) {
+      if (p->status() == 1 && p->end_vertex()) { bad = true; break; }
+      if (p->status() != 2) continue;
+      if (!p->end_vertex() || p->end_vertex()->particles_out().empty()) { bad = true; break; }
+      bool allPartons = true;
+      for (auto& d : p->end_vertex()->particles_out()) { int a = std::abs(d->pid()); if (!(a <= 8 || a == 21)) { allPartons = false; break; } }
+      if (allPartons) { bad = true; break; }
+    }
+    if (bad) { ++nBad; std::cerr << "dropping malformed event (decayed particle without daughters or with parton-only daughters), " << nBad << " so far\n"; --i; continue; }
+    ev.set_event_number(i + 1);            // 1-based, contiguous, same number in both experiments' outputs
     w3.write_event(ev);
     w2.write_event(ev);
     ++nGood;
@@ -68,6 +83,7 @@ int main(int argc, char** argv) {
      << "  \"card\": \"" << card << "\",\n"
      << "  \"seed\": " << seed << ",\n"
      << "  \"nevents\": " << nGood << ",\n"
+     << "  \"dropped_malformed\": " << nBad << ",\n"
      << "  \"sigma_gen_mb\": " << pythia.info.sigmaGen() << ",\n"
      << "  \"sigma_err_mb\": " << pythia.info.sigmaErr() << ",\n"
      << "  \"weight_sum\": " << pythia.info.weightSum() << "\n"

@@ -29,8 +29,11 @@ Everything below was checked on CVMFS / by running on 2026-09-16; "[inferred]" m
 2. `DIGI,L1,DIGI2RAW,HLT:2024v14 --pileup NoPileUp` → `step2_digiraw.root` (no `DATAMIX`/`premix_stage2`, which production uses for pre-mixed pile-up)
 3. `RAW2DIGI,L1Reco,RECO,RECOSIM,PAT` → `step3_reco.root` (AODSIM) + `step3_reco_inMINIAODSIM.root`
 4. `NANO` with `--eventcontent NANOAODSIM` (flat tree; McM's `NANOEDMAODSIM` is EDM and not uproot-flat) → `step4_nano.root`.
-   `CMS_PFNANO=1` (default) adds `--customise PhysicsTools/NanoAOD/custom_btv_cff.BTVCustomNanoAOD`, the in-release PFNano,
-   giving `PFCands_*` / `JetPFCands_*` on top of the standard `Jet_*`, `FatJet_*`, `Muon_*`, `Electron_*`, `GenPart_*`, `HLT_*` branches.
+   `CMS_PFNANO=1` (default) adds `--customise HepMCTools/Relabel/pfnano_customise.allPF`, which switches the in-release
+   PFNano (`PhysicsTools/NanoAOD/custom_btv_cff`) to `allPF=True`: **every** `packedPFCandidate` is stored as `PFCands_*`
+   (pt, eta, phi, mass, pdgId, charge, puppiWeight(NoLep), d0/dz, track quality/hits), with `JetPFCands_*` (jet↔candidate
+   index table) and `GenCands_*` (all `packedGenParticles`). The stock `BTVCustomNanoAOD` only keeps jet constituents
+   (3–4 candidates per Z→ee event instead of ~100–450).
 
 ## Cost (measured, 3 Z→ee events, `--nThreads 4`, lxplus, warm CVMFS cache; `log.<step>` has the full `/usr/bin/time -v`)
 | step | wall | max RSS |

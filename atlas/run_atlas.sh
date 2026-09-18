@@ -4,7 +4,8 @@
 #   atlas/run_atlas.sh <events.hepmc3|hepmc2> <outdir> <seed> <nevents>
 #
 # Chain (Athena ${ATHENA_RELEASE}, Run-3 MC23 geometry/conditions, NO pile-up, no trigger):
-#   HepMC --Gen_tf.py--> EVNT --Sim_tf.py (FullG4MT_QS)--> HITS --Reco_tf.py--> AOD --Derivation_tf.py--> DAOD_PHYSLITE
+#   HepMC --Gen_tf.py--> EVNT --Sim_tf.py (FullG4MT_QS)--> HITS --Reco_tf.py--> AOD --Derivation_tf.py--> DAOD_PHYSLITE + DAOD_FTAG1
+#   (FTAG1 = particle-flow objects, tracks, topoclusters, full truth; optional flat pflow.root via ATLAS_PFLOW_DUMP=1)
 # Runs inside the ATLAS AlmaLinux9 apptainer image with CVMFS; conditions come from Frontier (no grid proxy needed).
 # Every step writes log.<step> and a full transform report in <outdir>.
 set -eo pipefail
@@ -21,9 +22,10 @@ ATLAS_SIMULATOR="${ATLAS_SIMULATOR:-FullG4MT_QS}"
 ATLAS_SIM_PREINCLUDE="${ATLAS_SIM_PREINCLUDE:-Campaigns.MC23eSimulationMultipleIoV}"
 ATLAS_RECO_PREINCLUDE="${ATLAS_RECO_PREINCLUDE:-Campaigns.MC23eNoPileUp}"
 ATLAS_ECM_GEV="${ATLAS_ECM_GEV:-13600}"
-ATLAS_NTHREADS="${ATLAS_NTHREADS:-1}"
-ATLAS_DERIV_FORMATS="${ATLAS_DERIV_FORMATS:-PHYSLITE}"
-export ATLAS_GEOMETRY ATLAS_CONDITIONS ATLAS_SIMULATOR ATLAS_SIM_PREINCLUDE ATLAS_RECO_PREINCLUDE ATLAS_ECM_GEV ATLAS_NTHREADS ATLAS_DERIV_FORMATS
+ATLAS_NTHREADS="${ATLAS_NTHREADS:-4}"   # AthenaMT for Sim_tf/Reco_tf; output is identical to 1 thread (verified), sim wall time 2.4x faster
+ATLAS_DERIV_FORMATS="${ATLAS_DERIV_FORMATS:-PHYSLITE FTAG1}"   # FTAG1 keeps FlowElements, tracks, clusters and full TruthParticles
+ATLAS_PFLOW_DUMP="${ATLAS_PFLOW_DUMP:-1}"                        # 1: write pflow.root (JetETMiss FlowElements BEFORE e/gamma/mu/tau overlap removal + full truth); FTAG1 only has the post-removal Global* ones
+export ATLAS_GEOMETRY ATLAS_CONDITIONS ATLAS_SIMULATOR ATLAS_SIM_PREINCLUDE ATLAS_RECO_PREINCLUDE ATLAS_ECM_GEV ATLAS_NTHREADS ATLAS_DERIV_FORMATS ATLAS_PFLOW_DUMP
 
 # The inner script runs inside the container. It is written to the output dir so the exact
 # commands used are preserved next to the results.
@@ -61,10 +63,13 @@ step() { local name=\$1; shift; echo "[atlas] === \$name: \$(date) ==="; echo "\
       --preInclude "all:${ATLAS_RECO_PREINCLUDE}" --postInclude "all:PyJobTransforms.UseFrontier" \
       --digiSeedOffset1 ${SEED} --digiSeedOffset2 ${SEED} --maxEvents ${NEV} --multithreaded $( [ ${ATLAS_NTHREADS} -gt 1 ] && echo True || echo False )
 
-[ -s DAOD_PHYSLITE.out.pool.root ] || step 4_deriv Derivation_tf.py --CA --inputAODFile AOD.pool.root \
+have_all=1; for f in ${ATLAS_DERIV_FORMATS}; do [ -s DAOD_\$f.out.pool.root ] || have_all=0; done
+[ \$have_all = 1 ] || step 4_deriv Derivation_tf.py --CA --inputAODFile AOD.pool.root \
       --outputDAODFile out.pool.root --formats ${ATLAS_DERIV_FORMATS} --maxEvents ${NEV}
 
-echo "[atlas] done: \$(date)"; ls -la *.pool.root
+[ "${ATLAS_PFLOW_DUMP}" != 1 ] || [ -s pflow.root ] || step 5_pflow python "${REPO}/atlas/dump_pflow.py" AOD.pool.root pflow.root
+
+echo "[atlas] done: \$(date)"; ls -la *.pool.root pflow.root 2>/dev/null || true
 INNER
 chmod +x "${OUT}/atlas_chain.sh"
 

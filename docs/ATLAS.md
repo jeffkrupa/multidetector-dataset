@@ -25,6 +25,21 @@ composed from release code/tests rather than executed.
 4. **AOD → DAOD_PHYSLITE** (`Derivation_tf.py --CA --formats PHYSLITE`). PHYSLITE is flat enough for uproot:
    `uproot.open("DAOD_PHYSLITE.out.pool.root:CollectionTree")["AnalysisJetsAuxDyn.pt"]`.
 
+5. **Particle-flow objects and full truth: `DAOD_FTAG1`** (added to `--formats`, default `PHYSLITE FTAG1`). Pointed out by the
+   ATLAS derivation group: FTAG1 keeps the constituent-level content as dynamic (uproot-readable) branches:
+   `GlobalChargedParticleFlowObjects` / `GlobalNeutralParticleFlowObjects` (FlowElements *after* e/γ/μ overlap removal, so a
+   prompt electron is not double-counted, similar to a CMS PF electron), `InDetTrackParticles`, `CaloCalTopoClusters`,
+   `AntiKt4EMPFlowJets` (+VR track jets), and the **full** `TruthParticles`/`TruthVertices`. ~240 kB/event for Z→ee, 2 min/job.
+   **Caveat**: the Global containers are *after* overlap removal against electron, muon, photon and tau **candidates**
+   (no identification applied); tau candidates exist for many ordinary jets, so Global charged FEs under-count high-pT
+   jet-core tracks by ~30% (measured: Global/truth = 0.68 vs JetETMiss/truth = 0.85 for pT > 20 GeV). The analogue of
+   CMS's packed PF candidates is the pre-removal `JetETMiss*ParticleFlowObjects`, which only the AOD holds; `atlas/dump_pflow.py`
+   writes them (plus full truth) to a flat `pflow.root`, on by default (`ATLAS_PFLOW_DUMP=1`, ~25 s/job), and the
+   comparison prefers it.
+   Energy partition (200 ttbar events, |η|<2.5, ΣpT / visible truth): ATLAS charged 0.51 + neutral 0.42 = 0.93;
+   CMS charged 0.65 + neutral 0.28 = 0.94. ATLAS keeps the energy of tracks above ~40 GeV and in dense cores in the
+   calorimeter (neutral FEs); CMS assigns it to charged hadrons. Jets sum both, so the partition cancels.
+
 ## Cost (measured, 3 Z→ee events, single thread, lxplus, warm CVMFS cache; `log.<step>` has the full `/usr/bin/time -v`)
 | step | wall | max RSS | note |
 |---|---|---|---|
@@ -33,6 +48,15 @@ composed from release code/tests rather than executed.
 | Reco_tf (HITS→AOD)  | 2:42 | 4.4 GB | no pile-up, no trigger |
 | Derivation_tf PHYSLITE | 2:10 | 4.3 GB | mostly start-up |
 Per-event cost at scale is dominated by Sim; start-up (~1–2 min per transform) amortises over 100s of events per job.
+
+Multithreading (`ATLAS_NTHREADS`, default 4 → `ATHENA_CORE_NUMBER` + `--multithreaded True` on Sim_tf/Reco_tf), 20 ttbar events:
+| | 1 thread | 4 threads |
+|---|---|---|
+| Sim_tf wall | 17:26 | 7:19 (CPU 1012 s vs 1039 s) |
+| Reco_tf wall | 3:05 | 3:04 (start-up dominated) |
+| peak RSS | 2.9 / 4.4 GB | 3.0 / 4.8 GB |
+Reconstructed PHYSLITE content is identical for all 20 events between the two modes. Output event order differs (completion
+order); always join on the event number.
 Verified read-back: `EventInfoAuxDyn.eventNumber` = [1,2,3] (same as the HepMC event numbers), reconstructed
 `AnalysisElectronsAuxDyn.pt` present.
 

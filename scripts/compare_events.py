@@ -2,16 +2,21 @@
 """Compare the ATLAS and CMS outputs of one sample, event by event, at generator and reconstruction level.
 
     source gen/env_lcg.sh                      # needs uproot, awkward, numpy, matplotlib (all in the LCG view)
-    python3 scripts/compare_events.py output/<sample>
+    python3 scripts/compare_events.py output/<sample>                       # one sample
+    python3 scripts/compare_events.py output/condor/ttbar_13p6TeV_n100/seed*   # merge many seeds (plots -> .../compare_all/)
 
 Checks (each prints PASS/FAIL and the script exits non-zero on any FAIL):
   1. hepmc-inputs   the .hepmc2 file given to CMS and the .hepmc3 file given to ATLAS contain identical particles
   2. atlas-truth    every truth particle ATLAS stored (PHYSLITE Truth* containers) exists in the HepMC file
   3. cms-truth      every gen particle CMS stored (NanoAOD GenPart) exists in the HepMC file
+  2b. atlas-fulltruth  every HepMC particle exists in the ATLAS TruthParticles (full record, from DAOD_FTAG1 or pflow.root)
+  3b. cms-gencands     every HepMC stable particle with |eta|<5.9 exists in the CMS NanoAOD GenCands (all packedGenParticles, |y|<6)
   4. truth-xcheck   stable truth leptons/photons stored by both experiments agree 1:1 in (pdgId, pt, eta, phi)
   5. event-join     both experiments wrote every generated event, joined on the event number
 
-Then a per-event reco table and plots in <sample>/compare/ (truth identity, reco vs reco, reco vs truth).
+Then a per-event reco table and plots in <sample>/compare/: compare.png (truth identity, reco vs reco, reco vs truth),
+compare_pflow.png (particle-flow candidates: ATLAS Global*ParticleFlowObjects from DAOD_FTAG1 vs CMS PFCands from NanoAOD) and
+event_<n>.png displays.
 Event numbers: both experiments store the 1-based HepMC event number. NanoAOD may reorder events; nothing assumes order.
 """
 import glob, json, math, os, sys
@@ -58,6 +63,18 @@ def match_to_hepmc(cands, hep, rel_tol):
         if not ok: bad.append((pdg, round(pt, 2), round(eta, 3), round(phi, 3)))
     return bad
 
+def match_lists(cands, ref, rel_tol):
+    """Every (pdg, pt, eta, phi) in cands must exist in ref within tolerance; returns the unmatched ones (pt > 0.5 GeV only)."""
+    index = {}
+    for pdg, pt, eta, phi in ref: index.setdefault(pdg, []).append((pt, eta, phi))
+    bad = []
+    for pdg, pt, eta, phi in cands:
+        if pt < 0.5: continue
+        if not any(abs(p - pt) <= rel_tol * max(pt, 1.) and abs(h - eta) < 0.02 and abs((f - phi + math.pi) % (2 * math.pi) - math.pi) < 0.02
+                   for p, h, f in index.get(pdg, [])):
+            bad.append((pdg, round(pt, 2), round(eta, 3), round(phi, 3)))
+    return bad
+
 # --------------------------------------------------------------------------------------- ATLAS
 def load_atlas(d):
     f = glob.glob(os.path.join(d, "atlas", "DAOD_PHYSLITE.*.pool.root"))
@@ -88,6 +105,33 @@ def load_atlas(d):
                        n_mu=len(g("AnalysisMuonsAuxDyn.pt")),
                        jets=[(float(p) / 1000., float(e), float(f)) for p, e, f in zip(g("AnalysisJetsAuxDyn.pt"), g("AnalysisJetsAuxDyn.eta"), g("AnalysisJetsAuxDyn.phi"))],
                        met=met)
+    # particle-flow objects + full truth. Preferred source: pflow.root (JetETMiss* FlowElements = all charged/neutral
+    # PFlow objects BEFORE e/gamma/mu/tau overlap removal, the analogue of CMS packed PF candidates). Fallback: DAOD_FTAG1
+    # Global* FlowElements, which are AFTER overlap removal (tracks matched to any electron/muon/tau *candidate* are gone,
+    # so high-pT jet-core tracks are under-counted by ~30%). Truth comes from either.
+    ft = glob.glob(os.path.join(d, "atlas", "DAOD_FTAG1.*.pool.root")); pf = os.path.join(d, "atlas", "pflow.root")
+    if os.path.exists(pf):
+        a = uproot.open(pf)["pflow"].arrays(["event", "fe_ch_pt", "fe_ch_eta", "fe_ne_pt", "fe_ne_eta", "tp_pdg", "tp_pt", "tp_eta", "tp_phi"])
+        for i in range(len(a)):
+            ev = int(a["event"][i])
+            if ev in out:
+                out[ev]["pf"] = dict(ch=[(float(p), float(e)) for p, e in zip(a["fe_ch_pt"][i], a["fe_ch_eta"][i])],
+                                     ne=[(float(p), float(e)) for p, e in zip(a["fe_ne_pt"][i], a["fe_ne_eta"][i])])
+                out[ev]["fulltruth"] = [(int(g), float(pt), float(eta), float(phi)) for g, pt, eta, phi in zip(a["tp_pdg"][i], a["tp_pt"][i], a["tp_eta"][i], a["tp_phi"][i])]
+                out[ev]["pf_source"] = "pflow.root (JetETMiss FE)"
+    elif ft:
+        f = uproot.open(ft[0])["CollectionTree"]
+        a = f.arrays(["EventInfoAuxDyn.eventNumber", "GlobalChargedParticleFlowObjectsAuxDyn.pt", "GlobalChargedParticleFlowObjectsAuxDyn.eta",
+                      "GlobalNeutralParticleFlowObjectsAuxDyn.pt", "GlobalNeutralParticleFlowObjectsAuxDyn.eta",
+                      "TruthParticlesAuxDyn.pdgId", "TruthParticlesAuxDyn.px", "TruthParticlesAuxDyn.py", "TruthParticlesAuxDyn.pz", "TruthParticlesAuxDyn.e"])
+        for i in range(len(a)):
+            ev = int(a["EventInfoAuxDyn.eventNumber"][i])
+            if ev not in out: continue
+            out[ev]["pf"] = dict(ch=[(float(p) / 1000., float(e)) for p, e in zip(a["GlobalChargedParticleFlowObjectsAuxDyn.pt"][i], a["GlobalChargedParticleFlowObjectsAuxDyn.eta"][i])],
+                                 ne=[(float(p) / 1000., float(e)) for p, e in zip(a["GlobalNeutralParticleFlowObjectsAuxDyn.pt"][i], a["GlobalNeutralParticleFlowObjectsAuxDyn.eta"][i])])
+            out[ev]["fulltruth"] = [(int(g), *kin(float(px) / 1000., float(py) / 1000., float(pz) / 1000., float(e) / 1000.)) for g, px, py, pz, e in
+                                    zip(a["TruthParticlesAuxDyn.pdgId"][i], a["TruthParticlesAuxDyn.px"][i], a["TruthParticlesAuxDyn.py"][i], a["TruthParticlesAuxDyn.pz"][i], a["TruthParticlesAuxDyn.e"][i])]
+            out[ev]["pf_source"] = "FTAG1 (Global FE, post overlap removal)"
     return out, truth_containers
 
 # --------------------------------------------------------------------------------------- CMS
@@ -96,7 +140,8 @@ def load_cms(d):
     if not os.path.exists(f): return None
     t = uproot.open(f)["Events"]; keys = set(t.keys())
     want = ["event", "GenPart_pdgId", "GenPart_status", "GenPart_pt", "GenPart_eta", "GenPart_phi",
-            "Electron_pt", "Electron_eta", "Electron_phi", "Electron_cutBased", "nMuon", "Jet_pt", "Jet_eta", "Jet_phi", "PuppiMET_pt", "GenMET_pt"]
+            "Electron_pt", "Electron_eta", "Electron_phi", "Electron_cutBased", "nMuon", "Jet_pt", "Jet_eta", "Jet_phi", "PuppiMET_pt", "GenMET_pt",
+            "PFCands_pt", "PFCands_eta", "PFCands_charge", "GenCands_pdgId", "GenCands_pt", "GenCands_eta", "GenCands_phi"]
     a = t.arrays([w for w in want if w in keys])
     out = {}
     for i in range(len(a)):
@@ -110,6 +155,11 @@ def load_cms(d):
                        n_mu=int(a["nMuon"][i]),
                        jets=[(float(p), float(e), float(f)) for p, e, f in zip(a["Jet_pt"][i], a["Jet_eta"][i], a["Jet_phi"][i])],
                        met=float(a["PuppiMET_pt"][i]), genmet=float(a["GenMET_pt"][i]) if "GenMET_pt" in keys else None)
+        if "GenCands_pt" in keys:
+            out[ev]["gencands"] = [(int(g), float(pt), float(eta), float(phi)) for g, pt, eta, phi in zip(a["GenCands_pdgId"][i], a["GenCands_pt"][i], a["GenCands_eta"][i], a["GenCands_phi"][i])]
+        if "PFCands_pt" in keys:
+            out[ev]["pf"] = dict(ch=[(float(p), float(e)) for p, e, q in zip(a["PFCands_pt"][i], a["PFCands_eta"][i], a["PFCands_charge"][i]) if q != 0],
+                                 ne=[(float(p), float(e)) for p, e, q in zip(a["PFCands_pt"][i], a["PFCands_eta"][i], a["PFCands_charge"][i]) if q == 0])
     return out
 
 # --------------------------------------------------------------------------------------- helpers
@@ -130,33 +180,72 @@ def report(name, ok, detail=""):
     return ok
 
 # --------------------------------------------------------------------------------------- main
-def main(d):
-    d = d.rstrip("/"); ok = True
+def load_sample(d):
+    """Load one sample directory; keys are (sample_tag, event_number) so several seeds can be merged."""
+    d = d.rstrip("/"); tag = os.path.basename(d)
     gen = json.load(open(os.path.join(d, "gen", "events.json")))
-    print(f"sample: {d}\ngenerator: Pythia {gen['pythia_version']} seed {gen['seed']} nevents {gen['nevents']} card {os.path.basename(gen['card'])}\n")
+    rekey = lambda m: {(tag, k): v for k, v in m.items()} if m is not None else None
+    h3 = rekey(read_hepmc(os.path.join(d, "gen", "events.hepmc3"))); h2 = rekey(read_hepmc(os.path.join(d, "gen", "events.hepmc2")))
+    atlas = load_atlas(d); cms = rekey(load_cms(d))
+    atlas, containers = (rekey(atlas[0]), atlas[1]) if atlas else (None, [])
+    return gen, h3, h2, atlas, cms, containers
+
+def main(dirs, outdir=None):
+    dirs = [d.rstrip("/") for d in dirs]; ok = True
+    gen = dict(nevents=0, seeds=[]); h3, h2, atlas, cms = {}, {}, {}, {}; atlas_containers = []; missing = []
+    for d in dirs:
+        g, a3, a2, at, cm, cont = load_sample(d)
+        gen["nevents"] += g["nevents"]; gen["seeds"].append(g["seed"]); gen.setdefault("pythia_version", g["pythia_version"]); gen.setdefault("card", g["card"])
+        h3.update(a3); h2.update(a2)
+        if at is None or cm is None: missing.append((d, "ATLAS" if at is None else "", "CMS" if cm is None else "")); continue
+        atlas.update(at); cms.update(cm); atlas_containers = cont
+    print(f"samples: {len(dirs)} dir(s), seeds {gen['seeds'] if len(dirs) <= 12 else str(gen['seeds'][:12]) + '...'}\n"
+          f"generator: Pythia {gen['pythia_version']} card {os.path.basename(gen['card'])}, {gen['nevents']} events generated\n")
+    for m in missing: print(f"MISSING output in {m[0]}: {m[1]} {m[2]}")
 
     # 1. HepMC inputs identical
-    h3 = read_hepmc(os.path.join(d, "gen", "events.hepmc3")); h2 = read_hepmc(os.path.join(d, "gen", "events.hepmc2"))
-    key = lambda p: (p[0], p[1], round(p[5], 4), round(p[4], 4), round(p[3], 4))   # order-independent (HepMC2 lists particles per vertex)
+    key = lambda p: (p[0], p[1], p[5], p[4], p[3], p[2])   # order-independent (HepMC2 lists particles per vertex); full precision so near-identical soft partons pair correctly
     same = set(h3) == set(h2) and all(len(h3[e]) == len(h2[e]) and all(
         p[0] == q[0] and p[1] == q[1] and all(abs(p[k] - q[k]) <= 1e-6 * max(1., abs(p[k])) for k in range(2, 6))
         for p, q in zip(sorted(h3[e], key=key), sorted(h2[e], key=key))) for e in h3)
     ok &= report("hepmc-inputs", same, f"{len(h3)} events, {sum(len(v) for v in h3.values())} particles, "
                  f"{sum(sum(1 for p in v if p[1] == 1) for v in h3.values())} stable; HepMC3 (ATLAS) == HepMC2 (CMS)")
 
-    atlas = load_atlas(d); cms = load_cms(d)
-    if atlas is None or cms is None:
-        print("ATLAS output:", "found" if atlas else "MISSING", "| CMS output:", "found" if cms else "MISSING"); return 1
-    atlas, atlas_containers = atlas
+    if not atlas or not cms:
+        print("no sample with both ATLAS and CMS output"); return 1
 
     # 2./3. stored truth ⊂ HepMC
-    for name, coll, tol in [("atlas-truth", atlas, 1e-3), ("cms-truth", cms, 0.01)]:   # NanoAOD stores pt/eta/phi at ~1e-3 precision
+    for name, coll, tol in [("atlas-truth", atlas, 5e-3), ("cms-truth", cms, 0.01)]:   # NanoAOD stores pt/eta/phi at ~1e-3 precision; ATLAS: see PDG-mass note below
         nchk, bad = 0, []
         for ev, rec in coll.items():
             c = [(p, pt, eta, phi) for p, s, pt, eta, phi in rec["truth"]]
             nchk += len(c); bad += [(ev, b) for b in match_to_hepmc(c, h3.get(ev, []), tol)]
         src = f"PHYSLITE {'+'.join(atlas_containers)}" if name == "atlas-truth" else "NanoAOD GenPart"
         ok &= report(name, not bad, f"{nchk} stored truth particles ({src}) all found in HepMC" if not bad else f"{len(bad)} unmatched, e.g. {bad[:3]}")
+
+    # 2b/3b. the other direction, full record: every HepMC particle is in ATLAS TruthParticles (pflow.root), and every
+    #        HepMC *stable* particle is in CMS GenCands (all packedGenParticles). ATLAS may hold extra Geant4-added
+    #        secondaries (decays in flight, conversions), CMS may not, hence subset checks rather than equality.
+    if all("fulltruth" in atlas[ev] for ev in atlas):
+        # ATLAS resets the mass of broad resonances generated off-shell (e.g. a1(1260)) to the PDG value and rescales
+        # that particle and its decay products by O(0.1%) when it stores the truth record. Match at 1e-3 first; what is
+        # left must still match at 5e-3 (that residual is the PDG-mass adjustment and is reported, not failed).
+        nchk, strict, loose = 0, [], []
+        for ev, rec in atlas.items():
+            c = [(p, *kin(px, py, pz, e)) for p, st, px, py, pz, e in h3.get(ev, [])]
+            nchk += len(c); s1 = match_lists(c, rec["fulltruth"], 1e-3); strict += [(ev, b) for b in s1]
+            loose += [(ev, b) for b in match_lists([(b[0], b[1], b[2], b[3]) for b in s1], rec["fulltruth"], 5e-3)]
+        src = next(iter(atlas.values()))["pf_source"]
+        ok &= report("atlas-fulltruth", not loose, f"all {nchk} HepMC particles found in ATLAS TruthParticles ({src}); "
+                     f"{len(strict)} matched only at <0.5% (ATLAS PDG-mass adjustment of off-shell resonances)" if not loose
+                     else f"{len(loose)} HepMC particles missing from ATLAS truth even at 0.5%, e.g. {loose[:3]}")
+    if all("gencands" in cms[ev] for ev in cms):
+        nchk, bad = 0, []
+        for ev, rec in cms.items():
+            # CMS packedGenParticles are produced with maxRapidity = 6 (PATPackedGenParticleProducer); stay inside it
+            c = [(p, *kin(px, py, pz, e)) for p, st, px, py, pz, e in h3.get(ev, []) if st == 1 and abs(kin(px, py, pz, e)[1]) < 5.9]
+            nchk += len(c); bad += [(ev, b) for b in match_lists(c, rec["gencands"], 0.01)]
+        ok &= report("cms-gencands", not bad, f"all {nchk} HepMC stable particles with |eta|<5.9 found in CMS GenCands (packedGenParticles)" if not bad else f"{len(bad)} HepMC stable particles missing from CMS GenCands, e.g. {bad[:3]}")
 
     # 4. stable leptons/photons stored by both agree 1:1
     n_pairs, n_miss = 0, 0
@@ -171,19 +260,21 @@ def main(d):
 
     # 5. event join
     common = sorted(set(atlas) & set(cms))
-    ok &= report("event-join", len(common) == gen["nevents"] == len(atlas) == len(cms),
+    ok &= report("event-join", len(common) == gen["nevents"] == len(atlas) == len(cms) and not missing,
                  f"generated {gen['nevents']}, ATLAS {len(atlas)}, CMS {len(cms)}, joined {len(common)}")
 
     # per-event reco table
     print(f"\n{'event':>5} | {'ATLAS n_e':>9} {'e1 pT':>6} {'n_jet':>5} {'jet pT (GeV)':>24} {'MET':>6} | {'CMS n_e':>7} {'e1 pT':>6} {'n_jet':>5} {'jet pT (GeV)':>24} {'MET':>6}")
     fmt = lambda js: str([round(j[0], 1) for j in js[:4]])
-    for ev in common:
+    for ev in (common if len(common) <= 40 else common[:20]):
         a, c = atlas[ev], cms[ev]
-        print(f"{ev:>5} | {len(a['ele']):>9} {(round(a['ele'][0][0],1) if a['ele'] else '-'):>6} {len(a['jets']):>5} {fmt(a['jets']):>24} {(round(a['met'],1) if a['met'] is not None else '-'):>6} | "
+        print(f"{ev[1]:>5} | {len(a['ele']):>9} {(round(a['ele'][0][0],1) if a['ele'] else '-'):>6} {len(a['jets']):>5} {fmt(a['jets']):>24} {(round(a['met'],1) if a['met'] is not None else '-'):>6} | "
               f"{len(c['ele']):>7} {(round(c['ele'][0][0],1) if c['ele'] else '-'):>6} {len(c['jets']):>5} {fmt(c['jets']):>24} {round(c['met'],1):>6}")
 
+    if len(common) > 40: print(f"  ... ({len(common)} events; table truncated)")
+
     # plots
-    outdir = os.path.join(d, "compare"); os.makedirs(outdir, exist_ok=True)
+    outdir = outdir or (os.path.join(dirs[0], "compare") if len(dirs) == 1 else os.path.join(os.path.dirname(dirs[0]), "compare_all")); os.makedirs(outdir, exist_ok=True)
     make_plots(common, atlas, cms, h3, outdir)
     print(f"\nplots: {outdir}/")
     print("\nALL CHECKS PASSED" if ok else "\nSOME CHECKS FAILED"); return 0 if ok else 2
@@ -227,6 +318,38 @@ def make_plots(common, atlas, cms, hep, outdir):
     fig.suptitle(f"{os.path.basename(os.path.dirname(outdir))}: same {len(common)} Pythia8 events through ATLAS and CMS full simulation")
     fig.tight_layout(); fig.savefig(os.path.join(outdir, "compare.png"), dpi=110)
 
+    # particle-flow level (ATLAS FlowElements from pflow.root vs CMS packed PF candidates from NanoAOD), same fiducial cuts on both:
+    # charged: pT > 0.5 GeV, |eta| < 2.5 (tracker); neutral: pT > 1 GeV, |eta| < 2.5 — so that the two algorithms' different
+    # low-pT/forward thresholds do not dominate the comparison.
+    pfev = [ev for ev in common if "pf" in atlas[ev] and "pf" in cms[ev]]
+    if pfev:
+        sel_ch = lambda l: [p for p, e in l if p > 0.5 and abs(e) < 2.5]; sel_ne = lambda l: [p for p, e in l if p > 1.0 and abs(e) < 2.5]
+        nch = [(len(sel_ch(atlas[ev]["pf"]["ch"])), len(sel_ch(cms[ev]["pf"]["ch"]))) for ev in pfev]
+        sch = [(sum(sel_ch(atlas[ev]["pf"]["ch"])), sum(sel_ch(cms[ev]["pf"]["ch"]))) for ev in pfev]
+        nne = [(len(sel_ne(atlas[ev]["pf"]["ne"])), len(sel_ne(cms[ev]["pf"]["ne"]))) for ev in pfev]
+        sne = [(sum(sel_ne(atlas[ev]["pf"]["ne"])), sum(sel_ne(cms[ev]["pf"]["ne"]))) for ev in pfev]
+        # truth reference: stable charged particles in the same acceptance
+        tch = {ev: [kin(px, py, pz, e)[0] for pdg, st, px, py, pz, e in hep.get(ev, []) if st == 1 and abs(pdg) in (211, 321, 2212, 11, 13)
+                    and kin(px, py, pz, e)[0] > 0.5 and abs(kin(px, py, pz, e)[1]) < 2.5] for ev in pfev}
+        fig, ax = plt.subplots(2, 3, figsize=(15, 9))
+        ident(ax[0, 0], [n[0] for n in nch], [n[1] for n in nch], "N charged PF (pT>0.5, |η|<2.5)", unit="count")
+        ident(ax[0, 1], [n[0] for n in sch], [n[1] for n in sch], "Σ pT charged PF (pT>0.5, |η|<2.5)")
+        ident(ax[0, 2], [n[0] for n in nne], [n[1] for n in nne], "N neutral PF (pT>1, |η|<2.5)", unit="count")
+        # the decisive panel: charged + neutral together = the visible energy each experiment reconstructed
+        tot = [(sum(p for p, e in atlas[ev]["pf"]["ch"] if abs(e) < 2.5) + sum(p for p, e in atlas[ev]["pf"]["ne"] if abs(e) < 2.5),
+                sum(p for p, e in cms[ev]["pf"]["ch"] if abs(e) < 2.5) + sum(p for p, e in cms[ev]["pf"]["ne"] if abs(e) < 2.5)) for ev in pfev]
+        ident(ax[1, 0], [t[0] for t in tot], [t[1] for t in tot], "Σ pT charged+neutral PF (|η|<2.5): same energy, different split")
+        ax[1, 1].scatter([len(tch[ev]) for ev in pfev], [n[0] for n in nch], label="ATLAS charged FE", s=18)
+        ax[1, 1].scatter([len(tch[ev]) for ev in pfev], [n[1] for n in nch], label="CMS charged PF", s=18, marker="x")
+        m = max([len(tch[ev]) for ev in pfev] + [1]); ax[1, 1].plot([0, m], [0, m], "k--", lw=0.8)
+        ax[1, 1].set_xlabel("HepMC stable charged (pT>0.5, |η|<2.5)"); ax[1, 1].set_ylabel("reco charged"); ax[1, 1].legend(); ax[1, 1].set_title("charged multiplicity vs truth")
+        bins = np.logspace(-0.3, 2.5, 30)
+        ax[1, 2].hist([[p for ev in pfev for p in sel_ch(atlas[ev]["pf"]["ch"])], [p for ev in pfev for p in sel_ch(cms[ev]["pf"]["ch"])], [p for ev in pfev for p in tch[ev]]],
+                      bins=bins, histtype="step", label=["ATLAS charged FE", "CMS charged PF", "HepMC stable charged"])
+        ax[1, 2].set_xscale("log"); ax[1, 2].set_xlabel("charged pT [GeV]"); ax[1, 2].set_ylabel("candidates"); ax[1, 2].legend(); ax[1, 2].set_title("charged PF pT spectrum")
+        fig.suptitle(f"{os.path.basename(os.path.dirname(outdir))}: particle-flow level, {len(pfev)} events")
+        fig.tight_layout(); fig.savefig(os.path.join(outdir, "compare_pflow.png"), dpi=110); plt.close(fig)
+
     # per-event event display: truth stable particles vs reco jets/electrons for both experiments (first 4 events)
     for ev in common[:4]:
         fig, axs = plt.subplots(1, 2, figsize=(13, 5), sharex=True, sharey=True)
@@ -237,8 +360,14 @@ def make_plots(common, atlas, cms, hep, outdir):
                 if j[0] > 20: axis.add_patch(plt.Circle((j[1], j[2]), 0.4, fill=False, color="C0")); axis.text(j[1], j[2] + 0.45, f"{j[0]:.0f}", color="C0", fontsize=8, ha="center")
             for e in rec["ele"]: axis.plot(e[1], e[2], "r*", ms=12); axis.text(e[1], e[2] - 0.35, f"e {e[0]:.0f}", color="r", fontsize=8, ha="center")
             axis.set_xlim(-5, 5); axis.set_ylim(-math.pi, math.pi); axis.set_xlabel("η"); axis.set_ylabel("φ")
-            axis.set_title(f"{name} reco, event {ev}: jets pT>20 GeV (circles), electrons (stars)")
-        axs[0].legend(loc="upper left", fontsize=8); fig.tight_layout(); fig.savefig(os.path.join(outdir, f"event_{ev}.png"), dpi=100); plt.close(fig)
+            axis.set_title(f"{name} reco, {ev[0]} event {ev[1]}: jets pT>20 GeV (circles), electrons (stars)")
+        axs[0].legend(loc="upper left", fontsize=8); fig.tight_layout(); fig.savefig(os.path.join(outdir, f"event_{ev[0]}_{ev[1]}.png"), dpi=100); plt.close(fig)
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "output"))
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("dirs", nargs="+", help="one or more sample directories (each with gen/, atlas/, cms/); globs allowed")
+    ap.add_argument("--out", help="plot directory (default: <dir>/compare for one dir, <parent>/compare_all for several)")
+    args = ap.parse_args()
+    dirs = sorted(x for pat in args.dirs for x in (glob.glob(pat) or [pat]))
+    sys.exit(main(dirs, args.out))

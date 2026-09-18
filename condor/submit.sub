@@ -1,0 +1,62 @@
+# HTCondor submit file: N independent jobs, one seed each, same Pythia process.
+# Everything (repo, executable, logs, outputs) lives on EOS, so use CERN's EosSubmit schedds (no AFS paths anywhere):
+#   condor/make_tarball.sh                 (pack the current repo state into condor/repo.tar.gz)
+#   module load lxbatch/eossubmit
+#   condor_submit condor/submit.sub                                            (defaults below)
+#   condor_submit process=zee_13p6TeV nevents=500 njobs=20 seed0=2000 cpus=1 condor/submit.sub
+#
+# Sizing (measured on lxplus, 4+4 threads, ttbar): ATLAS ~50 s CPU/event, CMS ~15 s CPU/event, start-up ~10 min total.
+# 100 events/job on 2 cores (sequential) -> ~1.5 h; 500 events -> ~6 h (use tomorrow). Small slots match far more machines.
+
+# Defaults; command-line name=value overrides win because of the "if ! defined" guards.
+if ! defined process
+  process = ttbar_13p6TeV
+endif
+if ! defined nevents
+  nevents = 500
+endif
+if ! defined njobs
+  njobs = 10
+endif
+if ! defined seed0
+  seed0 = 1000
+endif
+if ! defined keep
+  keep = min
+endif
+# keep = min (analysis files only, ~0.5 MB/event) | std (+AOD, EVNT, MiniAOD) | all (+HITS, GEN-SIM, RAW, AODSIM)
+
+repo      = /eos/home-j/jeffkrup/agentic/multidetector-dataset
+seed      = $INT(seed_expr)
+seed_expr = $(seed0) + $(ProcId)
+final     = $(repo)/output/condor/$(process)_n$(nevents)/seed$(seed)
+
+executable            = $(repo)/condor/job.sh
+arguments             = $(process) $(seed) $(nevents) $(final) $(keep)
+# the repository is shipped with the job (make it with condor/make_tarball.sh); results are pushed by the job itself
+transfer_input_files  = $(repo)/condor/repo.tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files = ""
+output                = $(repo)/output/condor/logs/$(process)_n$(nevents)_seed$(seed).out
+error                 = $(repo)/output/condor/logs/$(process)_n$(nevents)_seed$(seed).err
+# EosSubmit requires one log file per cluster (no ProcId in its name)
+log                   = $(repo)/output/condor/logs/$(process)_n$(nevents).$(ClusterId).log
+
+# Kerberos ticket shipped to the node (EOS FUSE / xrootd writes)
+MY.SendCredential     = True
+# 4 cores: ATLAS then CMS sequentially, 4 threads each (job.sh switches to concurrent 4+4 when given >= 8 cores).
+# Peak memory ~5 GB; disk for 100-500 events of intermediates ~2-6 GB.
+if ! defined cpus
+  cpus = 2
+endif
+request_cpus          = $(cpus)
+# the schedd sets memory to 3 GB per requested core whatever is asked; measured peak per job: 3.4-7.3 GB (2 cores),
+# ATLAS reco ~4.4 GB single-threaded. Limits appeared soft in practice (7.3 GB used on a 6 GB allocation ran fine).
+request_memory        = 5 GB
+request_disk          = 8 GB
+# "workday" = 8 h (fine for <= 200 events/job on 2 cores); use "tomorrow" (24 h) for 500 events/job
++JobFlavour           = "workday"
+requirements          = (OpSysAndVer =?= "AlmaLinux9")
+
+queue $(njobs)
