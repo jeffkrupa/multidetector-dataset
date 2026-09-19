@@ -15,8 +15,9 @@ Checks (each prints PASS/FAIL and the script exits non-zero on any FAIL):
   5. event-join     both experiments wrote every generated event, joined on the event number
 
 Then a per-event reco table and plots in <sample>/compare/: compare.png (truth identity, reco vs reco, reco vs truth),
-compare_pflow.png (particle-flow candidates: ATLAS Global*ParticleFlowObjects from DAOD_FTAG1 vs CMS PFCands from NanoAOD) and
-event_<n>.png displays.
+compare_pflow.png (particle-flow candidates: ATLAS Global*ParticleFlowObjects from DAOD_FTAG1 vs CMS PFCands from NanoAOD),
+compare_marginals.png (every object of each experiment, matched or not: marginal distributions, reconstruction efficiency
+against the common truth, and how often an object of one experiment has a partner in the other) and event_<n>.png displays.
 Event numbers: both experiments store the 1-based HepMC event number. NanoAOD may reorder events; nothing assumes order.
 """
 import glob, json, math, os, sys
@@ -384,6 +385,8 @@ def make_plots(common, atlas, cms, hep, outdir):
         fig.suptitle(f"{os.path.basename(os.path.dirname(outdir))}: particle-flow level, {len(pfev)} events")
         fig.tight_layout(); fig.savefig(os.path.join(outdir, "compare_pflow.png"), dpi=110); plt.close(fig)
 
+    make_marginals(common, atlas, cms, hep, outdir, plt)
+
     # per-event event display: truth stable particles vs reco jets/electrons for both experiments (first 4 events)
     for ev in common[:4]:
         fig, axs = plt.subplots(1, 2, figsize=(13, 5), sharex=True, sharey=True)
@@ -396,6 +399,91 @@ def make_plots(common, atlas, cms, hep, outdir):
             axis.set_xlim(-5, 5); axis.set_ylim(-math.pi, math.pi); axis.set_xlabel("η"); axis.set_ylabel("φ")
             axis.set_title(f"{name} reco, {ev[0]} event {ev[1]}: jets pT>20 GeV (circles), electrons (stars)")
         axs[0].legend(loc="upper left", fontsize=8); fig.tight_layout(); fig.savefig(os.path.join(outdir, f"event_{ev[0]}_{ev[1]}.png"), dpi=100); plt.close(fig)
+
+def has_partner(A, B, maxdr):
+    """One flag per object of A: does it have a partner in B within maxdr (greedy in pT, each B used once)?"""
+    flags, used = [False] * len(A), set()
+    for i in sorted(range(len(A)), key=lambda k: -A[k][0]):
+        best = min(((dr(A[i], y), j) for j, y in enumerate(B) if j not in used), default=None)
+        if best and best[0] < maxdr: flags[i] = True; used.add(best[1])
+    return flags
+
+def make_marginals(common, atlas, cms, hep, outdir, plt):
+    """The scatter panels of compare.png only contain objects found by BOTH experiments and ΔR-matched, so they cannot show what
+    one detector reconstructs and the other does not. Here: every object of each experiment (marginals), the reconstruction
+    efficiency of each against the common HepMC truth, and how often an object of one experiment has a partner in the other."""
+    CA, CC = "C0", "C1"   # ATLAS, CMS: same colours in every panel; truth is always the grey fill
+    ETA_E, PT_PROBE, PT_PARTNER = 2.5, 30., 15.
+    eA, eC, jA, jC, tE, metA, metC, genmet, nE, nch = [], [], [], [], [], [], [], [], [], []
+    for ev in common:
+        a, c = atlas[ev], cms[ev]
+        te = [k for k in (kin(px, py, pz, e) for pdg, st, px, py, pz, e in hep.get(ev, []) if st == 1 and abs(pdg) == 11) if k[0] > 5 and abs(k[1]) < ETA_E]
+        tE += [(t, fa, fc) for t, fa, fc in zip(te, has_partner(te, a["ele"], 0.1), has_partner(te, c["ele"], 0.1))]
+        eA += list(zip(a["ele"], has_partner(a["ele"], c["ele"], 0.1))); eC += list(zip(c["ele"], has_partner(c["ele"], a["ele"], 0.1)))
+        # jets: probe above PT_PROBE, partner above PT_PARTNER, so that the partner's own pT threshold does not fake an inefficiency
+        pa, pc = [j for j in a["jets"] if j[0] > PT_PROBE], [j for j in c["jets"] if j[0] > PT_PROBE]
+        jA += list(zip(pa, has_partner(pa, [j for j in c["jets"] if j[0] > PT_PARTNER], 0.3)))
+        jC += list(zip(pc, has_partner(pc, [j for j in a["jets"] if j[0] > PT_PARTNER], 0.3)))
+        if a["met"] is not None: metA.append(a["met"])
+        metC.append(c["met"]); nE.append((len(a["ele"]), len(c["ele"])))
+        if c.get("genmet") is not None: genmet.append(c["genmet"])
+        if "pf" in a and "pf" in c:
+            sel = lambda l: sum(1 for p, e in l if p > 0.5 and abs(e) < 2.5)
+            nch.append((sel(a["pf"]["ch"]), sel(c["pf"]["ch"]), sum(1 for pdg, st, px, py, pz, e in hep.get(ev, []) if st == 1 and abs(pdg) in (211, 321, 2212, 11, 13)
+                                                                     and kin(px, py, pz, e)[0] > 0.5 and abs(kin(px, py, pz, e)[1]) < 2.5)))
+
+    def marg(axis, series, bins, xlabel, title, truth=None, logy=False):
+        if truth: axis.hist(truth[0], bins=bins, color="0.85", label=f"{truth[1]} (n={len(truth[0])})")
+        for d, l, c in series: axis.hist(d, bins=bins, histtype="step", lw=1.6, color=c, label=f"{l} (n={len(d)})")
+        if logy: axis.set_yscale("log")
+        axis.set_xlabel(xlabel); axis.set_ylabel("entries"); axis.set_title(title); axis.legend(fontsize=8)
+    def frac(axis, series, bins, xlabel, title, ylabel):
+        bins = np.asarray(bins, dtype=float); ctr = np.sqrt(bins[:-1] * bins[1:]) if bins[0] > 0 else 0.5 * (bins[:-1] + bins[1:])
+        for k, (pts, l, c, mk) in enumerate(series):   # pts = [(x, passed)]
+            n, _ = np.histogram([x for x, p in pts], bins); kk, _ = np.histogram([x for x, p in pts if p], bins); ok = n > 0
+            eff = kk[ok] / n[ok]; err = np.sqrt(np.clip(eff * (1 - eff), 0, None) / n[ok])
+            tot = sum(p for x, p in pts) / max(len(pts), 1)
+            axis.errorbar(ctr[ok], eff, yerr=err, fmt=mk + "-", ms=5, lw=1.2, color=c, label=f"{l}: {100 * tot:.1f}% of {len(pts)}")
+        axis.set_ylim(0, 1.08); axis.axhline(1, color="0.7", lw=0.8); axis.grid(axis="y", color="0.9")
+        if bins[0] > 0: axis.set_xscale("log"); axis.xaxis.set_minor_formatter(plt.NullFormatter())
+        axis.set_xlabel(xlabel); axis.set_ylabel(ylabel); axis.set_title(title); axis.legend(fontsize=8, loc="lower right")
+
+    fig, ax = plt.subplots(3, 4, figsize=(21, 14))
+    ptb = np.logspace(math.log10(5), math.log10(500), 25); effb = [5, 7, 10, 15, 20, 30, 40, 60, 100, 500]; etab = np.linspace(-2.5, 2.5, 26)
+    # electrons
+    marg(ax[0, 0], [([e[0] for e, m in eA], "ATLAS", CA), ([e[0] for e, m in eC], "CMS", CC)], ptb, "electron pT [GeV]", "all reco electrons: pT",
+         truth=([t[0] for t, fa, fc in tE], "HepMC e, pT>5, |η|<2.5"), logy=True); ax[0, 0].set_xscale("log")
+    marg(ax[0, 1], [([e[1] for e, m in eA], "ATLAS", CA), ([e[1] for e, m in eC], "CMS", CC)], etab, "electron η", "all reco electrons: η",
+         truth=([t[1] for t, fa, fc in tE], "HepMC e, pT>5"))
+    frac(ax[0, 2], [([(t[0], fa) for t, fa, fc in tE], "ATLAS", CA, "o"), ([(t[0], fc) for t, fa, fc in tE], "CMS", CC, "s")], effb,
+         "truth electron pT [GeV]", "electron efficiency vs the common truth (ΔR<0.1)", "fraction of truth electrons reconstructed")
+    cat = [sum(fa and fc for t, fa, fc in tE), sum(fa and not fc for t, fa, fc in tE), sum(fc and not fa for t, fa, fc in tE), sum(not fa and not fc for t, fa, fc in tE)]
+    bars = ax[0, 3].bar(["both", "ATLAS only", "CMS only", "neither"], cat, color=["0.45", CA, CC, "0.85"], width=0.6)
+    for b, v in zip(bars, cat): ax[0, 3].text(b.get_x() + b.get_width() / 2, v, f"{v}\n{100 * v / max(sum(cat), 1):.1f}%", ha="center", va="bottom", fontsize=9)
+    ax[0, 3].set_ylim(0, 1.2 * max(cat + [1])); ax[0, 3].set_ylabel("truth electrons"); ax[0, 3].set_title(f"who reconstructs each truth electron (n={sum(cat)})")
+    # jets
+    jb = np.logspace(math.log10(PT_PROBE), math.log10(1000), 25); jeb = [30, 40, 50, 70, 100, 150, 250, 1000]; jetab = np.linspace(-5, 5, 26)
+    marg(ax[1, 0], [([j[0] for j, m in jA], "ATLAS", CA), ([j[0] for j, m in jC], "CMS", CC)], jb, "jet pT [GeV]", f"all reco jets, pT>{PT_PROBE:.0f} GeV: pT", logy=True); ax[1, 0].set_xscale("log")
+    marg(ax[1, 1], [([j[1] for j, m in jA], "ATLAS", CA), ([j[1] for j, m in jC], "CMS", CC)], jetab, "jet η", f"all reco jets, pT>{PT_PROBE:.0f} GeV: η")
+    part = f"fraction with a partner (ΔR<0.3, pT>{PT_PARTNER:.0f}) in the other experiment"
+    frac(ax[1, 2], [([(j[0], m) for j, m in jA], "ATLAS jets found by CMS", CA, "o"), ([(j[0], m) for j, m in jC], "CMS jets found by ATLAS", CC, "s")], jeb, "jet pT [GeV]", "jets: cross-experiment match vs pT", part)
+    frac(ax[1, 3], [([(j[1], m) for j, m in jA], "ATLAS jets found by CMS", CA, "o"), ([(j[1], m) for j, m in jC], "CMS jets found by ATLAS", CC, "s")], np.linspace(-5, 5, 11), "jet η", "jets: cross-experiment match vs η", part)
+    # event level
+    marg(ax[2, 0], [(metA, "ATLAS core-term sum", CA), (metC, "CMS PuppiMET", CC)], np.linspace(0, 100, 26), "MET [GeV]", "MET", truth=(genmet, "CMS GenMET") if genmet else None, logy=True)
+    marg(ax[2, 1], [([n[0] for n in nE], "ATLAS", CA), ([n[1] for n in nE], "CMS", CC)], np.arange(-0.5, 7.5, 1), "reco electrons per event", "electron multiplicity")
+    frac(ax[2, 2], [([(e[0], m) for e, m in eA], "ATLAS e found by CMS", CA, "o"), ([(e[0], m) for e, m in eC], "CMS e found by ATLAS", CC, "s")], effb, "reco electron pT [GeV]",
+         "electrons: cross-experiment match vs pT", "fraction with a partner (ΔR<0.1) in the other experiment")
+    if nch: marg(ax[2, 3], [([n[0] for n in nch], "ATLAS charged FE", CA), ([n[1] for n in nch], "CMS charged PF", CC)], np.linspace(0, 160, 41), "charged candidates per event (pT>0.5, |η|<2.5)",
+                 "charged particle-flow multiplicity", truth=([n[2] for n in nch], "HepMC stable charged"))
+    else: ax[2, 3].axis("off")
+    fig.suptitle(f"{os.path.basename(os.path.dirname(outdir))}: marginals and efficiencies, all objects (matched or not), {len(common)} events")
+    fig.tight_layout(rect=[0, 0, 1, 0.97]); fig.savefig(os.path.join(outdir, "compare_marginals.png"), dpi=100); plt.close(fig)
+
+    pct = lambda pts: f"{100 * sum(m for o, m in pts) / max(len(pts), 1):.1f}% of {len(pts)}"
+    print("\nunmatched objects (not visible in the scatter plots):")
+    print(f"  truth electrons (pT>5, |η|<{ETA_E}): {sum(cat)}  -> both {cat[0]}, ATLAS only {cat[1]}, CMS only {cat[2]}, neither {cat[3]}")
+    print(f"  reco electrons with a partner in the other experiment: ATLAS {pct(eA)}, CMS {pct(eC)}")
+    print(f"  reco jets pT>{PT_PROBE:.0f} with a partner pT>{PT_PARTNER:.0f} in the other experiment: ATLAS {pct(jA)}, CMS {pct(jC)}")
 
 if __name__ == "__main__":
     import argparse
