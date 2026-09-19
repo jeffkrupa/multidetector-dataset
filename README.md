@@ -168,12 +168,25 @@ condor/make_tarball.sh
 PROCESS=ttbar_13p6TeV NEVENTS=100 SEED0=3000 KEEP=min sbatch --array=0-19 --cpus-per-task=1 slurm/submit.sbatch
 ```
 
-Nodes need x86_64 EL9, CVMFS, apptainer and outbound access to the ATLAS/CMS Frontier conditions servers. No CERN
-account is involved; outputs go to `FINAL_BASE` (default `output/slurm/<process>_n<N>/seed<seed>/`).
+Submit from the repo root (Slurm runs a spooled copy of the script, so the repo is taken from `SLURM_SUBMIT_DIR`, or
+`REPO_DIR`). Nodes need x86_64, CVMFS, user namespaces and outbound access to the ATLAS/CMS Frontier conditions servers;
+the host OS does not matter (on a non-EL9 host the generator step also runs inside the EL9 image, and `apptainer` is
+taken from `/cvmfs/oasis.opensciencegrid.org` if the site has none). No CERN account is involved; outputs go to
+`FINAL_BASE` (default `output/slurm/<process>_n<N>/seed<seed>/`). Each task works in a directory of its own under
+`SCRATCH_BASE` (default: the site's `SLURM_TMPDIR`, else `$PSCRATCH`, else `TMPDIR`) and removes it after delivery.
+
+NERSC Perlmutter (SLES 15, no system apptainer, no node-local disk), verified with 10 x 100 Z→ee events, ~1h10 per job
+on the 4 hardware threads the `shared` QOS gives a 6 GB request:
+
+```bash
+FINAL_BASE=$CFS/<project>/<user>/multidetector/<tag> PROCESS=zee_13p6TeV NEVENTS=100 SEED0=1000 \
+  sbatch -A <project> -C cpu -q shared --time=02:00:00 --array=0-9 slurm/submit.sbatch
+```
 
 ## Requirements
 
-* EL9 host with `/cvmfs/{sft,atlas,atlas-condb,cms}.cern.ch` and `apptainer` (lxplus works out of the box).
+* x86_64 host with `/cvmfs/{sft,atlas,atlas-condb,cms}.cern.ch` and `apptainer` or user namespaces (lxplus works out
+  of the box; elsewhere the CVMFS `apptainer` is used).
 * Network access to the ATLAS Frontier conditions service and the CMS conditions (Frontier / CVMFS snapshot).
   No grid certificate is needed.
 * Disk: keep `output/` on EOS or local scratch; the container steps bind `/eos`, `/tmp` and the Kerberos cache

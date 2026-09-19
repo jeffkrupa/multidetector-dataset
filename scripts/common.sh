@@ -1,5 +1,8 @@
 # Shared shell helpers, sourced by every run script.
 
+# Sites without a system apptainer (e.g. NERSC Perlmutter): use the unprivileged one distributed on CVMFS.
+command -v apptainer >/dev/null 2>&1 || PATH="${PATH}:/cvmfs/oasis.opensciencegrid.org/mis/apptainer/bin"
+
 # `mkdir -p /eos/...` fails on the EOS FUSE mount when an existing ancestor is only traversable via
 # EOS ACLs (coreutils tries chdir/mkdir on each ancestor). Create only the components that are missing.
 mkdirp() {

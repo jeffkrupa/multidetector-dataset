@@ -7,3 +7,4 @@ __pycache__/
 repo.tar.gz
 PROVENANCE
 probe_*.txt
+multidet_*.out

@@ -65,5 +65,14 @@ else
   xrdfs eosuser.cern.ch mkdir -p "${FINAL}" >/dev/null 2>&1
   ( cd "${KEEPDIR}" && find . -type f | while read -r f; do xrdcp -f -s "${f}" "${XR}/${f#./}" || echo "[job] xrdcp failed: ${f}"; done ) && echo "[job] copied via xrootd to ${XR}" || rc=$((rc + 200))
 fi
+
+# --- clean up: HTCondor wipes its scratch dir, Slurm / shared scratch does not. Only what this job created, and only
+# once the results are delivered (rc < 100); the scratch dir itself only if it is this job's own and now empty.
+if [ "${rc}" -lt 100 ]; then
+  rm -rf "${OUT}" "${SCRATCH}/keep" "${SCRATCH}/repo" "${SCRATCH}/repo.tar.gz" "${CMS_WORK_AREA}"
+  [ -n "${SLURM_TMPDIR:-}" ] && { cd /; rmdir "${SCRATCH}" 2>/dev/null; }
+else
+  echo "[job] delivery failed: results left in ${KEEPDIR}"
+fi
 echo "[job] done rc=${rc} at $(date)"
 exit ${rc}
