@@ -9,3 +9,12 @@ evgenConfig.nEventsPerJob = 100000     # upper bound; actual count is --maxEvent
 evgenConfig.inputFilesPerJob = 1
 evgenConfig.tune = "Monash 2013 (external Pythia8)"
 include("TruthIO/HepMCReadFromFile_Common.py")
+
+# ATLAS must take every event CMS takes. TestHepMC drops ~1 event in 10^4 (a decay vertex > 1 m from the origin, or
+# > 100 mm transverse; Pythia energy-momentum imbalance of tens of GeV); Gen_tf then reads past the end of the HepMC
+# file to make up the count and aborts (~13% of 1000-event jobs). Switch off only those rejections, keep the rest
+# (NaN, tachyons, unknown PDG IDs, unstable particles without a decay vertex, ...).
+if hasattr(testSeq, "TestHepMC"):
+    testSeq.TestHepMC.VtxDisplacedTest = False
+    testSeq.TestHepMC.EnergyImbalanceTest = False
+    testSeq.TestHepMC.MomImbalanceTest = False
