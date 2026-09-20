@@ -387,10 +387,14 @@ def make_plots(common, atlas, cms, hep, outdir):
     def ident(axis, x, y, title, unit="GeV"):
         if len(x) > 20000:   # a scatter saturates: log-density instead
             from matplotlib.colors import LogNorm
-            lim = [0, 1.1 * max(max(x), max(y))]; axis.hist2d(x, y, bins=120, range=[lim, lim], norm=LogNorm(), cmap="Blues")
-        else: axis.scatter(x, y, s=18)
-        if x: lim = [0, 1.1 * max(max(x), max(y))]; axis.plot(lim, lim, "k--", lw=0.8); axis.set_xlim(lim); axis.set_ylim(lim)
-        axis.set_xlabel(f"ATLAS [{unit}]"); axis.set_ylabel(f"CMS [{unit}]"); axis.set_title(f"{title} (n={len(x)})")
+            # range from the 99.9th percentile, or a few outliers squeeze everything into a corner; say how many are outside
+            hi = 1.1 * max(np.percentile(x, 99.9), np.percentile(y, 99.9)); lim = [0, hi]; nout = sum(1 for u, v in zip(x, y) if u > hi or v > hi)
+            axis.hist2d(x, y, bins=100, range=[lim, lim], norm=LogNorm(), cmap="Blues")
+            if nout: axis.text(0.03, 0.95, f"{nout} beyond the axes", transform=axis.transAxes, fontsize=8, va="top", color="0.3")
+        else:
+            axis.scatter(x, y, s=18); lim = [0, 1.1 * max(max(x), max(y))] if x else None
+        if x: axis.plot(lim, lim, "k--", lw=0.8); axis.set_xlim(lim); axis.set_ylim(lim)
+        axis.set_xlabel(f"ATLAS [{unit}]"); axis.set_ylabel(f"CMS [{unit}]"); axis.set_title(f"{title} (n={len(x)})", fontsize=10 if len(title) > 45 else None)
     ident(ax[0, 0], tA, tC, "truth e/μ pT (PHYSLITE vs GenPart)")
     ident(ax[0, 1], eA, eC, "reco electron pT (ΔR<0.1 matched)")
     ident(ax[0, 2], jA, jC, "reco jet pT >20 GeV (ΔR<0.3 matched)")
