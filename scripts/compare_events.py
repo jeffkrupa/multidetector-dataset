@@ -276,9 +276,15 @@ def main(dirs, outdir=None, summary=None, plots=True):
             c = [(p, *kin(px, py, pz, e)) for p, st, px, py, pz, e in h3.get(ev, [])]
             nchk += len(c); s1 = match_lists(c, rec["fulltruth"], 1e-3); strict += [(ev, b) for b in s1]
             loose += [(ev, b) for b in match_lists([(b[0], b[1], b[2], b[3]) for b in s1], rec["fulltruth"], 5e-3)]
+        # Athena's FixHepMC removes a few intermediate partons per ~10^6 particles "while cleaning decay chains" (seen in events
+        # whose Pythia record has an energy-momentum imbalance). Quarks, gluons and diquarks never reach the detector, so
+        # that is reported, not failed; anything else missing fails.
+        is_parton = lambda g: abs(g) in (1, 2, 3, 4, 5, 6, 21) or (1000 < abs(g) < 10000 and (abs(g) // 10) % 10 == 0)
+        partons = [x for x in loose if is_parton(x[1][0])]; loose = [x for x in loose if not is_parton(x[1][0])]
         src = next(iter(atlas.values()))["pf_source"]
         ok &= report("atlas-fulltruth", not loose, f"all {nchk} HepMC particles found in ATLAS TruthParticles ({src}); "
-                     f"{len(strict)} matched only at <0.5% (ATLAS PDG-mass adjustment of off-shell resonances)" if not loose
+                     f"{len(strict)} matched only at <0.5% (ATLAS PDG-mass adjustment of off-shell resonances)"
+                     + (f"; except {len(partons)} intermediate partons removed by ATLAS FixHepMC in events {sorted({x[0][1] for x in partons})}" if partons else "") if not loose
                      else f"{len(loose)} HepMC particles missing from ATLAS truth even at 0.5%, e.g. {loose[:3]}")
     if all("gencands" in cms[ev] for ev in cms):
         nchk, bad = 0, []
