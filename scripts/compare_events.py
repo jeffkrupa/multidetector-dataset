@@ -4,6 +4,10 @@
     source gen/env_lcg.sh                      # needs uproot, awkward, numpy, matplotlib (all in the LCG view)
     python3 scripts/compare_events.py output/<sample>                       # one sample
     python3 scripts/compare_events.py output/condor/ttbar_13p6TeV_n100/seed*   # merge many seeds (plots -> .../compare_all/)
+  at scale (everything above is held in memory, fine up to ~10k events): one pass per seed, then merge; scripts/compare.sh
+  runs this script in the right environment on any host and slurm/compare.sbatch does both steps as batch jobs
+    python3 scripts/compare_events.py --no-plots --summary sum/seed1000.pkl <dir>/seed1000      # checks + slim summary
+    python3 scripts/compare_events.py --merge --out <plotdir> sum/*.pkl                         # check tally + plots
 
 Checks (each prints PASS/FAIL and the script exits non-zero on any FAIL):
   1. hepmc-inputs   the .hepmc2 file given to CMS and the .hepmc3 file given to ATLAS contain identical particles
@@ -189,9 +193,11 @@ def match_objects(A, B, maxdr):
         if best and best[0] < maxdr: pairs.append((x, B[best[1]])); used.add(best[1])
     return pairs
 
+RESULTS = []   # (check, passed, detail) of this run, kept for --summary
+TITLE = None   # plot title prefix; default: name of the directory above the plot directory
 def report(name, ok, detail=""):
     print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f": {detail}" if detail else ""))
-    return ok
+    RESULTS.append((name, bool(ok), detail)); return ok
 
 # --------------------------------------------------------------------------------------- main
 def hepmc_files(d, gen):
@@ -225,7 +231,7 @@ def load_sample(d):
     atlas, containers = (rekey(atlas[0]), atlas[1]) if atlas else (None, [])
     return gen, h3, h2, atlas, cms, containers
 
-def main(dirs, outdir=None):
+def main(dirs, outdir=None, summary=None, plots=True):
     dirs = [d.rstrip("/") for d in dirs]; ok = True
     gen = dict(nevents=0, seeds=[]); h3, h2, atlas, cms = {}, {}, {}, {}; atlas_containers = []; missing = []
     for d in dirs:
@@ -308,9 +314,43 @@ def main(dirs, outdir=None):
 
     if len(common) > 40: print(f"  ... ({len(common)} events; table truncated)")
 
-    # plots
-    outdir = outdir or (os.path.join(dirs[0], "compare") if len(dirs) == 1 else os.path.join(os.path.dirname(dirs[0]), "compare_all")); os.makedirs(outdir, exist_ok=True)
-    make_plots(common, atlas, cms, h3, outdir)
+    if summary: write_summary(summary, gen, common, atlas, cms, h3)
+    if plots:
+        outdir = outdir or (os.path.join(dirs[0], "compare") if len(dirs) == 1 else os.path.join(os.path.dirname(dirs[0]), "compare_all")); os.makedirs(outdir, exist_ok=True)
+        make_plots(common, atlas, cms, h3, outdir)
+        print(f"\nplots: {outdir}/")
+    print("\nALL CHECKS PASSED" if ok else "\nSOME CHECKS FAILED"); return 0 if ok else 2
+
+def write_summary(path, gen, common, atlas, cms, hep):
+    """Pickle what the plots need and nothing else: the reco objects and stored truth of both experiments (no full truth
+    records, particle flow inside the tracker only) and the HepMC stable particles in the tracker acceptance (all stable
+    ones for the first 4 events, for the event displays), plus the outcome of every check."""
+    import pickle
+    def slim(rec):
+        r = {k: v for k, v in rec.items() if k not in ("fulltruth", "gencands")}
+        if "pf" in r: r["pf"] = {k: [x for x in v if abs(x[1]) < 2.5] for k, v in r["pf"].items()}
+        return r
+    H = {ev: [p for p in hep.get(ev, []) if p[1] == 1 and (i < 4 or (math.hypot(p[2], p[3]) > 0.5 and abs(kin(*p[2:])[1]) < 2.5))] for i, ev in enumerate(common)}
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "wb") as f:
+        pickle.dump(dict(gen=gen, results=RESULTS, common=common, atlas={ev: slim(atlas[ev]) for ev in common}, cms={ev: slim(cms[ev]) for ev in common}, hep=H), f, protocol=4)
+    print(f"summary: {path}")
+
+def merge(files, outdir):
+    """Second step at scale: tally the checks of the per-seed passes and make the plots from their summaries."""
+    import pickle
+    nev, seeds, common, atlas, cms, hep, res = 0, [], [], {}, {}, {}, {}
+    for f in files:
+        with open(f, "rb") as fh: s = pickle.load(fh)
+        nev += s["gen"]["nevents"]; seeds += s["gen"]["seeds"]; common += s["common"]; atlas.update(s["atlas"]); cms.update(s["cms"]); hep.update(s["hep"])
+        for name, passed, detail in s["results"]: res.setdefault(name, []).append((s["gen"]["seeds"], passed, detail))
+    print(f"merged {len(files)} summaries: seeds {min(seeds)}..{max(seeds)}, {nev} events generated, {len(common)} joined\n")
+    ok = len(common) == nev
+    for name, r in res.items():
+        bad = [x for x in r if not x[1]]; ok &= not bad
+        print(f"[{'PASS' if not bad else 'FAIL'}] {name}: {len(r) - len(bad)}/{len(r)} samples" + (f"; failed e.g. {[(b[0], b[2]) for b in bad[:3]]}" if bad else ""))
+    os.makedirs(outdir, exist_ok=True)
+    make_plots(sorted(common), atlas, cms, hep, outdir)
     print(f"\nplots: {outdir}/")
     print("\nALL CHECKS PASSED" if ok else "\nSOME CHECKS FAILED"); return 0 if ok else 2
 
@@ -339,7 +379,10 @@ def make_plots(common, atlas, cms, hep, outdir):
 
     fig, ax = plt.subplots(2, 3, figsize=(15, 9))
     def ident(axis, x, y, title, unit="GeV"):
-        axis.scatter(x, y, s=18)
+        if len(x) > 20000:   # a scatter saturates: log-density instead
+            from matplotlib.colors import LogNorm
+            lim = [0, 1.1 * max(max(x), max(y))]; axis.hist2d(x, y, bins=120, range=[lim, lim], norm=LogNorm(), cmap="Blues")
+        else: axis.scatter(x, y, s=18)
         if x: lim = [0, 1.1 * max(max(x), max(y))]; axis.plot(lim, lim, "k--", lw=0.8); axis.set_xlim(lim); axis.set_ylim(lim)
         axis.set_xlabel(f"ATLAS [{unit}]"); axis.set_ylabel(f"CMS [{unit}]"); axis.set_title(f"{title} (n={len(x)})")
     ident(ax[0, 0], tA, tC, "truth e/μ pT (PHYSLITE vs GenPart)")
@@ -350,7 +393,7 @@ def make_plots(common, atlas, cms, hep, outdir):
     ax[1, 1].set_xlabel("N jets (pT>25 GeV)"); ax[1, 1].set_ylabel("events"); ax[1, 1].legend(); ax[1, 1].set_title("jet multiplicity")
     ax[1, 2].hist([rA, rC], bins=np.linspace(0.7, 1.3, 25), label=[f"ATLAS (n={len(rA)})", f"CMS (n={len(rC)})"], alpha=0.7)
     ax[1, 2].set_xlabel("reco e pT / truth e pT"); ax[1, 2].set_ylabel("electrons"); ax[1, 2].legend(); ax[1, 2].set_title("electron response vs HepMC truth")
-    fig.suptitle(f"{os.path.basename(os.path.dirname(outdir))}: same {len(common)} Pythia8 events through ATLAS and CMS full simulation")
+    fig.suptitle(f"{TITLE or os.path.basename(os.path.dirname(outdir))}: same {len(common)} Pythia8 events through ATLAS and CMS full simulation")
     fig.tight_layout(); fig.savefig(os.path.join(outdir, "compare.png"), dpi=110)
 
     # particle-flow level (ATLAS FlowElements from pflow.root vs CMS packed PF candidates from NanoAOD), same fiducial cuts on both:
@@ -374,15 +417,16 @@ def make_plots(common, atlas, cms, hep, outdir):
         tot = [(sum(p for p, e in atlas[ev]["pf"]["ch"] if abs(e) < 2.5) + sum(p for p, e in atlas[ev]["pf"]["ne"] if abs(e) < 2.5),
                 sum(p for p, e in cms[ev]["pf"]["ch"] if abs(e) < 2.5) + sum(p for p, e in cms[ev]["pf"]["ne"] if abs(e) < 2.5)) for ev in pfev]
         ident(ax[1, 0], [t[0] for t in tot], [t[1] for t in tot], "Σ pT charged+neutral PF (|η|<2.5): same energy, different split")
-        ax[1, 1].scatter([len(tch[ev]) for ev in pfev], [n[0] for n in nch], label="ATLAS charged FE", s=18)
-        ax[1, 1].scatter([len(tch[ev]) for ev in pfev], [n[1] for n in nch], label="CMS charged PF", s=18, marker="x")
+        ms = 18 if len(pfev) < 5000 else 2
+        ax[1, 1].scatter([len(tch[ev]) for ev in pfev], [n[0] for n in nch], label="ATLAS charged FE", s=ms)
+        ax[1, 1].scatter([len(tch[ev]) for ev in pfev], [n[1] for n in nch], label="CMS charged PF", s=ms, marker="x")
         m = max([len(tch[ev]) for ev in pfev] + [1]); ax[1, 1].plot([0, m], [0, m], "k--", lw=0.8)
         ax[1, 1].set_xlabel("HepMC stable charged (pT>0.5, |η|<2.5)"); ax[1, 1].set_ylabel("reco charged"); ax[1, 1].legend(); ax[1, 1].set_title("charged multiplicity vs truth")
         bins = np.logspace(-0.3, 2.5, 30)
         ax[1, 2].hist([[p for ev in pfev for p in sel_ch(atlas[ev]["pf"]["ch"])], [p for ev in pfev for p in sel_ch(cms[ev]["pf"]["ch"])], [p for ev in pfev for p in tch[ev]]],
                       bins=bins, histtype="step", label=["ATLAS charged FE", "CMS charged PF", "HepMC stable charged"])
         ax[1, 2].set_xscale("log"); ax[1, 2].set_xlabel("charged pT [GeV]"); ax[1, 2].set_ylabel("candidates"); ax[1, 2].legend(); ax[1, 2].set_title("charged PF pT spectrum")
-        fig.suptitle(f"{os.path.basename(os.path.dirname(outdir))}: particle-flow level, {len(pfev)} events")
+        fig.suptitle(f"{TITLE or os.path.basename(os.path.dirname(outdir))}: particle-flow level, {len(pfev)} events")
         fig.tight_layout(); fig.savefig(os.path.join(outdir, "compare_pflow.png"), dpi=110); plt.close(fig)
 
     make_marginals(common, atlas, cms, hep, outdir, plt)
@@ -476,7 +520,7 @@ def make_marginals(common, atlas, cms, hep, outdir, plt):
     if nch: marg(ax[2, 3], [([n[0] for n in nch], "ATLAS charged FE", CA), ([n[1] for n in nch], "CMS charged PF", CC)], np.linspace(0, 160, 41), "charged candidates per event (pT>0.5, |η|<2.5)",
                  "charged particle-flow multiplicity", truth=([n[2] for n in nch], "HepMC stable charged"))
     else: ax[2, 3].axis("off")
-    fig.suptitle(f"{os.path.basename(os.path.dirname(outdir))}: marginals and efficiencies, all objects (matched or not), {len(common)} events")
+    fig.suptitle(f"{TITLE or os.path.basename(os.path.dirname(outdir))}: marginals and efficiencies, all objects (matched or not), {len(common)} events")
     fig.tight_layout(rect=[0, 0, 1, 0.97]); fig.savefig(os.path.join(outdir, "compare_marginals.png"), dpi=100); plt.close(fig)
 
     pct = lambda pts: f"{100 * sum(m for o, m in pts) / max(len(pts), 1):.1f}% of {len(pts)}"
@@ -490,6 +534,11 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dirs", nargs="+", help="one or more sample directories (each with gen/, atlas/, cms/); globs allowed")
     ap.add_argument("--out", help="plot directory (default: <dir>/compare for one dir, <parent>/compare_all for several)")
-    args = ap.parse_args()
+    ap.add_argument("--summary", help="also write a slim pickle of what the plots need (first step at scale)")
+    ap.add_argument("--no-plots", action="store_true", help="checks (and --summary) only")
+    ap.add_argument("--merge", action="store_true", help="the arguments are --summary files: tally their checks and make the plots (needs --out)")
+    ap.add_argument("--title", help="plot title prefix (default: name of the directory above the plot directory)")
+    args = ap.parse_args(); TITLE = args.title
     dirs = sorted(x for pat in args.dirs for x in (glob.glob(pat) or [pat]))
-    sys.exit(main(dirs, args.out))
+    if args.merge and not args.out: ap.error("--merge needs --out")
+    sys.exit(merge(dirs, args.out) if args.merge else main(dirs, args.out, args.summary, not args.no_plots))
