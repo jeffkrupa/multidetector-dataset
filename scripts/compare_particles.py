@@ -19,7 +19,8 @@ import uproot
 CHARGED = (211, 321, 2212, 11, 13, 3112, 3222, 3312, 3334); NEUTRINOS = (12, 14, 16)
 PT = np.logspace(math.log10(0.5), math.log10(200), 41); ETA = np.linspace(-5, 5, 51); ETAC = np.linspace(-2.5, 2.5, 26)
 EPT = np.array([0.5, 0.7, 1, 1.5, 2, 3, 5, 10, 20, 50, 200.]); GPT = np.array([1, 1.5, 2, 3, 5, 10, 20, 50, 200.]); NCH = np.arange(-0.5, 200.5, 4); NNE = np.arange(-0.5, 80.5, 2)
-BINS = dict(ch_pt=PT, ne_pt=PT, ch_eta=ETAC, ne_eta=ETA, flow_ch=ETA, flow_ne=ETA, n_ch=NCH, n_ne=NNE, eff_pt=EPT, eff_eta=ETAC, fake_pt=EPT, geff_pt=GPT)
+FID = 2.5; RESP = np.linspace(0, 2, 81)   # fiducial region for everything integrated over eta: the tracker acceptance of both experiments
+BINS = dict(resp_tot=RESP, resp_ch=RESP, resp_ne=RESP, ratio_ac=RESP, chfrac=np.linspace(0, 1, 51), ch_pt=PT, ne_pt=PT, ch_eta=ETAC, ne_eta=ETA, flow_ch=ETA, flow_ne=ETA, n_ch=NCH, n_ne=NNE, eff_pt=EPT, eff_eta=ETAC, fake_pt=EPT, geff_pt=GPT)
 
 def near(e1, p1, e2, p2, R):
     """For each (e1, p1): is there any (e2, p2) within dR < R?"""
@@ -54,6 +55,14 @@ def one_seed(d):
             (cpt, ceta, cphi), (npt, neta, nphi) = c["ch"], c["ne"]; cin = (np.abs(ceta) < 2.5) & (cpt > 0.5); nin = np.abs(neta) < 2.5
             add(det + ":ch_pt", cpt[cin]); add(det + ":ch_eta", ceta[cin]); add(det + ":ne_pt", npt[nin]); add(det + ":ne_eta", neta[npt > 1])
             add(det + ":flow_ch", ceta, cpt); add(det + ":flow_ne", neta, npt); add(det + ":n_ch", [cin.sum()]); add(det + ":n_ne", [(nin & (npt > 1)).sum()])
+        # fiducial sums per event: is the visible energy the same, and how is it split between charged and neutral?
+        fs = {det: tuple(c[k][0][np.abs(c[k][1]) < FID].sum() for k in ("ch", "ne")) for det, c in cand.items()}
+        for det, (c_, n_) in fs.items():
+            if c_ + n_ > 0: add(det + ":chfrac", [c_ / (c_ + n_)])
+            if det != "truth":
+                for kind, num, den in (("resp_tot", c_ + n_, sum(fs["truth"])), ("resp_ch", c_, fs["truth"][0]), ("resp_ne", n_, fs["truth"][1])):
+                    if den > 0: add(f"{det}:{kind}", [min(num / den, 1.999)])
+        if sum(fs["CMS"]) > 0: add("ATLAS:ratio_ac", [min(sum(fs["ATLAS"]) / sum(fs["CMS"]), 1.999)])
         (tpt, teta, tphi) = cand["truth"]["ch"]; tin = (np.abs(teta) < 2.5) & (tpt > 0.5); tloose = tpt > 0.3
         gin = tga & (np.abs(geta) < 2.5) & (gpt > 1)
         for det in ("ATLAS", "CMS"):
@@ -85,7 +94,16 @@ def plot(H, outdir, title):
             ax.errorbar(ctr[ok], e, yerr=np.sqrt(np.clip(e * (1 - e), 0, None) / n[ok]), fmt=mk + "-", ms=4, lw=1.2, color=COL[det], label=f"{det}: {100 * k.sum() / max(n.sum(), 1):.1f}% of {int(n.sum())}")
         if logx: ax.set_xscale("log"); ax.xaxis.set_minor_formatter(plt.NullFormatter())
         ax.set_ylim(*ylim); ax.axhline(1, color="0.7", lw=0.8); ax.grid(axis="y", color="0.9"); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel, fontsize=9); ax.set_title(ttl, fontsize=10); ax.legend(fontsize=8)
-    fig, ax = plt.subplots(3, 4, figsize=(21, 14))
+    fig, ax = plt.subplots(4, 4, figsize=(21, 18.5))
+    def dist(axis, items, bins, xlabel, ttl):
+        ctr = 0.5 * (bins[:-1] + bins[1:])
+        for key, lab, col, ls in items:
+            h = H[key].astype(float); mu = (h * ctr).sum() / h.sum(); rms = math.sqrt((h * (ctr - mu) ** 2).sum() / h.sum())
+            if col == "fill": axis.stairs(h, bins, fill=True, color="0.85", label=f"{lab}: mean {mu:.2f}")
+            else: axis.stairs(h, bins, color=col, ls=ls, lw=1.6, label=f"{lab}: mean {mu:.2f}, rms {rms:.2f}")
+        axis.set_xlabel(xlabel); axis.set_ylabel("events"); axis.set_title(ttl, fontsize=10); axis.legend(fontsize=8)
+    for det in ("truth", "ATLAS", "CMS"): H[det + ":flow_tot"] = H[det + ":flow_ch"] + H[det + ":flow_ne"]
+    BINS["flow_tot"] = ETA
     marg(ax[0, 0], "ch_pt", "pT [GeV]", "charged candidates: pT  (|η|<2.5)", "truth stable charged", logx=True, logy=True); ax[0, 0].set_ylabel("candidates")
     marg(ax[0, 1], "ch_eta", "η", "charged candidates: η  (pT>0.5 GeV)", "truth stable charged"); ax[0, 1].set_ylabel("candidates")
     ratio(ax[0, 2], "eff_pt", "truth pT [GeV]", "charged: efficiency vs truth pT  (|η|<2.5, ΔR<0.03)", "fraction of truth charged particles found")
@@ -99,8 +117,17 @@ def plot(H, outdir, title):
     marg(ax[2, 1], "flow_ne", "η", "neutral energy flow: dΣpT/dη per event", "truth", per_event=True, density_eta=True); ax[2, 1].set_ylabel("GeV per unit η")
     marg(ax[2, 2], "n_ch", "charged candidates per event (pT>0.5, |η|<2.5)", "charged multiplicity", "truth"); ax[2, 2].set_ylabel("events")
     marg(ax[2, 3], "n_ne", "neutral candidates per event (pT>1, |η|<2.5)", "neutral multiplicity", "truth"); ax[2, 3].set_ylabel("events")
+    marg(ax[3, 0], "flow_tot", "η", "charged + neutral energy flow: dΣpT/dη per event", "truth (no neutrinos)", per_event=True, density_eta=True); ax[3, 0].set_ylabel("GeV per unit η")
+    for a_ in (ax[1, 1], ax[2, 0], ax[2, 1], ax[3, 0]):
+        for x in (-FID, FID): a_.axvline(x, color="0.4", lw=0.8, ls=":")
+    dist(ax[3, 1], [("ATLAS:resp_tot", "ATLAS / truth", COL["ATLAS"], "-"), ("CMS:resp_tot", "CMS / truth", COL["CMS"], "-"), ("ATLAS:ratio_ac", "ATLAS / CMS", "k", "--")], RESP,
+         f"ΣpT(charged+neutral, |η|<{FID}) ratio, per event", f"visible energy in the fiducial region |η|<{FID}")
+    dist(ax[3, 2], [("ATLAS:resp_ch", "ATLAS charged", COL["ATLAS"], "-"), ("CMS:resp_ch", "CMS charged", COL["CMS"], "-"), ("ATLAS:resp_ne", "ATLAS neutral", COL["ATLAS"], ":"), ("CMS:resp_ne", "CMS neutral", COL["CMS"], ":")], RESP,
+         f"ΣpT(reco) / ΣpT(truth), |η|<{FID}, per event", "charged and neutral separately")
+    dist(ax[3, 3], [("truth:chfrac", "truth", "fill", "-"), ("ATLAS:chfrac", "ATLAS", COL["ATLAS"], "-"), ("CMS:chfrac", "CMS", COL["CMS"], "-")], BINS["chfrac"],
+         f"charged fraction of ΣpT, |η|<{FID}, per event", "how the same energy is split")
     fig.suptitle(f"{title}: particle-level marginals, every particle-flow candidate (matched or not), {int(nev)} events")
-    fig.tight_layout(rect=[0, 0, 1, 0.97]); os.makedirs(outdir, exist_ok=True); fig.savefig(os.path.join(outdir, "compare_particles.png"), dpi=100)
+    fig.tight_layout(rect=[0, 0, 1, 0.975]); os.makedirs(outdir, exist_ok=True); fig.savefig(os.path.join(outdir, "compare_particles.png"), dpi=100)
     print(f"{title}: {int(nev)} events -> {outdir}/compare_particles.png")
     for kind, lab in (("eff_pt", "truth charged (pT>0.5, |η|<2.5) found"), ("geff_pt", "truth photons (pT>1, |η|<2.5) with a neutral candidate"), ("fake_pt", "charged candidates without a truth particle")):
         print(f"  {lab}: " + ", ".join(f"{det} {100 * H[f'{det}:{kind}_num'].sum() / max(H[f'{det}:{kind}_den'].sum(), 1):.1f}%" for det in ("ATLAS", "CMS")))
