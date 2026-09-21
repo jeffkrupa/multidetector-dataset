@@ -69,8 +69,9 @@ def match_to_hepmc(cands, hep, rel_tol):
         if not ok: bad.append((pdg, round(pt, 2), round(eta, 3), round(phi, 3)))
     return bad
 
-def match_lists(cands, ref, rel_tol):
-    """Every (pdg, pt, eta, phi) in cands must exist in ref within tolerance; returns the unmatched ones (pt > 0.5 GeV only)."""
+def match_lists(cands, ref, rel_tol, rounded=True):
+    """Every (pdg, pt, eta, phi) in cands must exist in ref within tolerance; returns the unmatched ones (pt > 0.5 GeV only),
+    rounded for printing unless they are to be matched again (rounding pt to 0.01 is the whole 0.5% tolerance at 1 GeV)."""
     index = {}
     for pdg, pt, eta, phi in ref: index.setdefault(pdg, []).append((pt, eta, phi))
     bad = []
@@ -78,7 +79,7 @@ def match_lists(cands, ref, rel_tol):
         if pt < 0.5: continue
         if not any(abs(p - pt) <= rel_tol * max(pt, 1.) and abs(h - eta) < 0.02 and abs((f - phi + math.pi) % (2 * math.pi) - math.pi) < 0.02
                    for p, h, f in index.get(pdg, [])):
-            bad.append((pdg, round(pt, 2), round(eta, 3), round(phi, 3)))
+            bad.append((pdg, round(pt, 2), round(eta, 3), round(phi, 3)) if rounded else (pdg, pt, eta, phi))
     return bad
 
 # --------------------------------------------------------------------------------------- ATLAS
@@ -274,8 +275,8 @@ def main(dirs, outdir=None, summary=None, plots=True):
         nchk, strict, loose = 0, [], []
         for ev, rec in atlas.items():
             c = [(p, *kin(px, py, pz, e)) for p, st, px, py, pz, e in h3.get(ev, [])]
-            nchk += len(c); s1 = match_lists(c, rec["fulltruth"], 1e-3); strict += [(ev, b) for b in s1]
-            loose += [(ev, b) for b in match_lists([(b[0], b[1], b[2], b[3]) for b in s1], rec["fulltruth"], 5e-3)]
+            nchk += len(c); s1 = match_lists(c, rec["fulltruth"], 1e-3, rounded=False); strict += [(ev, b) for b in s1]
+            loose += [(ev, b) for b in match_lists(s1, rec["fulltruth"], 5e-3)]
         # Athena's FixHepMC removes a few intermediate partons per ~10^6 particles "while cleaning decay chains" (seen in events
         # whose Pythia record has an energy-momentum imbalance). Quarks, gluons and diquarks never reach the detector, so
         # that is reported, not failed; anything else missing fails.
