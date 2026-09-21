@@ -5,6 +5,7 @@
 #   scripts/compare.sh output/<sample>
 #   scripts/compare.sh --no-plots --summary sum/seed1000.pkl <dir>/seed1000
 #   scripts/compare.sh --merge --out <plotdir> sum/*.pkl
+#   scripts/compare.sh --particles --hist h/seed1000.npz <dir>/seed1000      # scripts/compare_particles.py instead
 set -eo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${REPO}/scripts/common.sh"
@@ -16,4 +17,5 @@ if [ -z "${CMP_IN_CONTAINER:-}" ] && ! grep -qs 'platform:el9' /etc/os-release; 
 fi
 source "${REPO}/gen/env_lcg.sh" > /dev/null 2>&1
 export MPLBACKEND=Agg
-exec python3 "${REPO}/scripts/compare_events.py" "$@"
+SCRIPT=compare_events.py; [ "${1:-}" = "--particles" ] && { SCRIPT=compare_particles.py; shift; }   # particle-level marginals
+exec python3 "${REPO}/scripts/${SCRIPT}" "$@"
