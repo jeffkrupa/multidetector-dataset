@@ -20,12 +20,33 @@ Status legend: **M** measured, **U** understood (mechanism verified), **H** hypo
 | reproduces the experiment's own jets when clustered as stored? | **no**: 50.5 % of jets within 1 % (M) | **yes**: 99.9 % within 1 %; membership table sums to the raw jet pT within 0.25 % (M) |
 | what is needed to reproduce the jets | `WeightPFOTool` weights + |z0 sinθ| < 2 mm: 77 % within 1 %, 91 % within 5 %, median 1.000 (M, U) | PUPPI weight (irrelevant without pileup) |
 
-ATLAS jet-input weights (Athena `WeightPFOTool`, EM scale; all inputs are stored in our files): with
-`EoverP = TracksExpectedEnergyDeposit / E`, w = 1 for pT < 30 GeV, interpolated to `EoverP` between 30 and 60 GeV,
-`EoverP` above; minus `EoverP` if `IsInDenseEnvironment`; 0 above 100 GeV. In ttbar 8.4 % of charged objects are in a dense
-environment and ATLAS itself keeps only 77.8 % of the stored charged pT when it builds jets. **The stored ATLAS list
-over-counts in jet cores unless these weights are applied.** Open: the remaining 9 % of jets outside 5 % (T; candidates:
-neutral origin correction, lepton-linked objects).
+**How ATLAS builds `AnalysisJets` (read from the Athena 25.0.72 configuration, `JetRecConfig/StandardSmallRJets.py`,
+`StandardJetConstits.py`, `JetInputConfig.py`, `JetRecTools/JetPFlowSelectionAlg.h`):**
+
+1. `AntiKt4EMPFlow = JetDefinition("AntiKt", 0.4, cst.GPFlow, ...)` — the input is **`GlobalParticleFlowObjects`**, not the
+   `JetETMiss` list. The derivation jets (`AntiKt4EMPFlow_deriv`, what PHYSLITE stores) are a clone with the same input.
+2. `GlobalParticleFlowObjects` = `JetPFlowSelectionAlg` applied to the `JetETMiss` list. Defaults: remove **charged** objects
+   linked to an **LHMedium electron** or a **Medium muon**; **neutral** objects linked to electrons or muons are **kept**
+   (`excludeNeutralElectronFE = excludeNeutralMuonFE = false`); photons and taus are not touched by this algorithm.
+   (The earlier belief that Global also drops photon- and tau-linked objects was wrong.)
+3. Constituent modifiers `["CorrectPFO", "CHS"]`: `CorrectPFOTool` applies the `WeightPFOTool` weight to charged objects
+   and the origin correction to neutral ones; `ChargedHadronSubtractionTool` keeps charged objects associated to the
+   primary vertex via the track–vertex-association tool (`UseTrackToVertexTool = True` in the default context), not a
+   plain |z0 sinθ| cut.
+4. anti-kT R = 0.4 → `JetConstitScaleMomentum` (uncalibrated) → calibration → `AnalysisJets.pt`.
+
+`WeightPFOTool` (EM scale): with `EoverP = TracksExpectedEnergyDeposit / E`, w = 1 for pT < 30 GeV, interpolated to `EoverP`
+between 30 and 60 GeV, `EoverP` above; minus `EoverP` if `IsInDenseEnvironment`; 0 above 100 GeV. In ttbar 8.4 % of charged
+objects are in a dense environment and only 77.8 % of the stored charged pT survives weights + vertex association.
+
+Closure measured (ttbar, jets pT > 30 GeV, |η| < 2, reclustered / stored uncalibrated pT): `JetETMiss` as stored 50 % within
+1 %; `JetETMiss` + weights + vertex + origin correction 84 % / 91 % within 1 % / 5 %; **Global + weights 89 % / 97 %**
+(100 events, without vertex association or origin correction). Overlap removal removes 0.4 % of objects per event in ttbar;
+those few objects are what spoiled the `JetETMiss` closure. CMS `PFCands` reproduce CMS jets to 0.1 %.
+
+**Consequence:** the self-consistent ATLAS particle list (the one ATLAS itself clusters) is `Global{Charged,Neutral}
+ParticleFlowObjects`, which our production did not store; the stored `JetETMiss` list differs from it only by the
+charged objects linked to Medium electrons and muons (0.4 % of objects in ttbar, more in Z→ee). Test on Z→ee pending.
 
 ## 2. Measured so far (fiducial, per event, mean (rms) of reco / truth ΣpT)
 
